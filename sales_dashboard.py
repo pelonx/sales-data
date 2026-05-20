@@ -5,7 +5,9 @@ import plotly.graph_objects as go
 from io import BytesIO
 import re
 import os
+import sqlite3
 import tempfile
+from pathlib import Path
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "sales_dashboard_matplotlib"))
 import matplotlib
 matplotlib.use("Agg")
@@ -23,6 +25,8 @@ from datetime import datetime
 st.set_page_config(page_title="Store Sales Dashboard", layout="wide")
 
 BLUE = "#378ADD"
+DATA_DIR = Path("Data")
+DB_PATH = DATA_DIR / "sales_dashboard.sqlite3"
 TOTAL_PATTERN = re.compile(
     r"^(total|totals|sum|grand\s*total|ytd|year\s*to\s*date|annual|avg|average|subtotal)s?$",
     re.IGNORECASE,
@@ -152,6 +156,59 @@ def sort_share_rows(share_df, revenue_col, sort_by):
 
 def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-") or "report"
+
+def storage_path():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return DB_PATH
+
+def init_storage():
+    with sqlite3.connect(storage_path()) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS saved_datasets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                raw_text TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+def list_saved_datasets():
+    init_storage()
+    with sqlite3.connect(storage_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT id, name, created_at, updated_at
+            FROM saved_datasets
+            ORDER BY updated_at DESC, name COLLATE NOCASE
+        """).fetchall()
+    return [dict(row) for row in rows]
+
+def get_saved_dataset(dataset_id):
+    init_storage()
+    with sqlite3.connect(storage_path()) as conn:
+        row = conn.execute(
+            "SELECT raw_text FROM saved_datasets WHERE id = ?",
+            (dataset_id,)
+        ).fetchone()
+    return row[0] if row else ""
+
+def save_dataset(name, raw_text):
+    init_storage()
+    now = datetime.now().isoformat(timespec="seconds")
+    with sqlite3.connect(storage_path()) as conn:
+        conn.execute("""
+            INSERT INTO saved_datasets (name, raw_text, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                raw_text = excluded.raw_text,
+                updated_at = excluded.updated_at
+        """, (name, raw_text, now, now))
+
+def delete_saved_dataset(dataset_id):
+    init_storage()
+    with sqlite3.connect(storage_path()) as conn:
+        conn.execute("DELETE FROM saved_datasets WHERE id = ?", (dataset_id,))
 
 # ── Chart helpers (return PNG BytesIO for embedding in PDF) ───────────────────
 
@@ -625,9 +682,52 @@ with st.sidebar:
 
     if "raw_input" not in st.session_state:
         st.session_state.raw_input = ""
+    if "storage_notice" in st.session_state:
+        st.success(st.session_state.storage_notice)
+        del st.session_state.storage_notice
+
+    saved_datasets = list_saved_datasets()
+    if saved_datasets:
+        st.subheader("Saved Data")
+        saved_options = {
+            f"{row['name']} · {row['updated_at'].replace('T', ' ')[:16]}": row["id"]
+            for row in saved_datasets
+        }
+        selected_saved = st.selectbox("Dataset", list(saved_options.keys()), key="saved_dataset")
+        load_col, delete_col = st.columns(2)
+        if load_col.button("Load", use_container_width=True):
+            loaded_text = get_saved_dataset(saved_options[selected_saved])
+            if loaded_text:
+                st.session_state.raw_input = loaded_text
+                st.session_state.storage_notice = f"Loaded {selected_saved.split(' · ')[0]}."
+                st.rerun()
+        if delete_col.button("Delete", use_container_width=True):
+            delete_saved_dataset(saved_options[selected_saved])
+            st.session_state.storage_notice = f"Deleted {selected_saved.split(' · ')[0]}."
+            st.rerun()
+
     if st.button("Load demo data"):
         st.session_state.raw_input = sample
     raw_input = st.text_area("Paste data here", height=220, placeholder="License\tStore Name\tJan\tFeb...", key="raw_input")
+
+    with st.form("save_dataset_form"):
+        dataset_name = st.text_input("Dataset name", placeholder="Example: Q2 retailer sales")
+        save_clicked = st.form_submit_button("Save current data")
+    if save_clicked:
+        clean_name = dataset_name.strip()
+        if not clean_name:
+            st.warning("Enter a dataset name before saving.")
+        elif not raw_input.strip():
+            st.warning("Paste or load data before saving.")
+        else:
+            try:
+                parse_input(raw_input)
+            except Exception as e:
+                st.error(f"Fix the pasted data before saving: {e}")
+            else:
+                save_dataset(clean_name, raw_input.strip())
+                st.session_state.storage_notice = f"Saved {clean_name}."
+                st.rerun()
 
     threshold = st.select_slider("Pareto threshold", options=[0.7, 0.8, 0.9], value=0.8, format_func=lambda x: f"{int(x*100)}%")
 
