@@ -8,6 +8,7 @@ import os
 import sqlite3
 import tempfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "sales_dashboard_matplotlib"))
 import matplotlib
 matplotlib.use("Agg")
@@ -35,6 +36,7 @@ MONTH_PATTERN = re.compile(
     r"^(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december|q[1-4])(?:[\s._/-]*\d{2,4})?$",
     re.IGNORECASE,
 )
+SHEET_ID_PATTERN = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -126,6 +128,47 @@ def parse_input(text):
     df.index = pd.Index(new_index, name=df.index.name)
 
     return df, months, stripped
+
+def google_sheet_csv_url(sheet_url, gid="0"):
+    sheet_url = sheet_url.strip()
+    if not sheet_url:
+        raise ValueError("Enter a Google Sheets URL.")
+
+    parsed = urlparse(sheet_url)
+    qs = parse_qs(parsed.query)
+    fragment_qs = parse_qs(parsed.fragment)
+    url_gid = (
+        qs.get("gid", [None])[0]
+        or fragment_qs.get("gid", [None])[0]
+        or str(gid or "0").strip()
+        or "0"
+    )
+
+    if "docs.google.com" not in parsed.netloc:
+        if sheet_url.lower().endswith(".csv"):
+            return sheet_url
+        raise ValueError("Enter a Google Sheets share URL or a direct CSV URL.")
+
+    if "/pub" in parsed.path and qs.get("output", [""])[0].lower() == "csv":
+        return sheet_url
+
+    match = SHEET_ID_PATTERN.search(parsed.path)
+    if not match:
+        raise ValueError("Could not find the spreadsheet ID in that Google Sheets URL.")
+
+    sheet_id = match.group(1)
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={url_gid}"
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_google_sheet_as_tsv(sheet_url, gid="0"):
+    csv_url = google_sheet_csv_url(sheet_url, gid)
+    sheet_df = pd.read_csv(csv_url).dropna(how="all").dropna(axis=1, how="all")
+    if sheet_df.empty:
+        raise ValueError("The selected sheet is empty.")
+    if len(sheet_df.columns) < 3:
+        raise ValueError("Expected at least 3 columns: License, Store Name, and month columns.")
+    sheet_df.columns = [str(c).strip() for c in sheet_df.columns]
+    return sheet_df.to_csv(sep="\t", index=False).strip(), csv_url, sheet_df.shape
 
 def compute_pareto(df, months, threshold=0.80):
     totals = df[months].sum(axis=1).sort_values(ascending=False)
@@ -685,6 +728,20 @@ with st.sidebar:
     if "storage_notice" in st.session_state:
         st.success(st.session_state.storage_notice)
         del st.session_state.storage_notice
+
+    st.subheader("Google Sheets")
+    sheet_url = st.text_input("Sheet URL", placeholder="https://docs.google.com/spreadsheets/d/...")
+    sheet_gid = st.text_input("Worksheet gid", value="0", help="Use the gid from the sheet tab URL. Leave 0 for the first sheet.")
+    if st.button("Load from Google Sheets", use_container_width=True):
+        try:
+            sheet_text, _, sheet_shape = load_google_sheet_as_tsv(sheet_url, sheet_gid)
+            parse_input(sheet_text)
+        except Exception as e:
+            st.error(f"Could not load sheet: {e}")
+        else:
+            st.session_state.raw_input = sheet_text
+            st.session_state.storage_notice = f"Loaded Google Sheet with {sheet_shape[0]} rows and {sheet_shape[1]} columns."
+            st.rerun()
 
     saved_datasets = list_saved_datasets()
     if saved_datasets:
