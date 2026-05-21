@@ -1151,51 +1151,74 @@ with tab_top:
     st.divider()
 
     # Share by store (top group only)
-    col_left, col_right = st.columns([1,1])
+    st.subheader("Share by store")
+
+    # ── Controls ─────────────────────────────────────────────────────────────
+    fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 2])
+    _from_default = months.index(window_months[0])
+    _to_default   = months.index(window_months[-1])
+    from_month = fc1.selectbox("From", months, index=_from_default, key="t2_from")
+    to_month   = fc2.selectbox("To",   months, index=_to_default,   key="t2_to")
+    sort_by2   = fc3.selectbox("Sort", SORT_OPTIONS, key="t2_sort")
+    search2    = fc4.text_input("Search", placeholder="Store name or license…", key="t2_search", label_visibility="collapsed")
+
+    # Resolve range (swap if user picks From > To)
+    fi, ti = months.index(from_month), months.index(to_month)
+    if fi > ti:
+        fi, ti = ti, fi
+    range_months = months[fi: ti + 1]
+    range_label  = from_month if fi == ti else f"{from_month} – {to_month}"
+
+    # Revenue summed across range
+    share_df2 = df.loc[w_top_lics, ["Store Name"] + range_months].copy()
+    share_df2["_rev"] = share_df2[range_months].sum(axis=1)
+    all_rev_range = df[range_months].sum(axis=1).sum()
+    grp_rev_range = share_df2["_rev"].sum()
+    share_df2["% of Group"] = share_df2["_rev"].apply(lambda v: pct_value(v, grp_rev_range))
+    share_df2["% of All"]   = share_df2["_rev"].apply(lambda v: pct_value(v, all_rev_range))
+
+    # Sort then search-filter (rank reflects sorted order before filtering)
+    share_df2 = sort_share_rows(share_df2, "_rev", sort_by2)
+    share_df2.insert(0, "#", range(1, len(share_df2) + 1))
+    if search2:
+        mask = (
+            share_df2["Store Name"].str.contains(search2, case=False, na=False)
+            | share_df2.index.str.contains(search2, case=False)
+        )
+        share_df2 = share_df2[mask]
+
+    col_left, col_right = st.columns([1, 1])
     with col_left:
-        st.subheader("Share by store")
-        _default_month2 = find_last_month_col(months)
-        sel_month2 = st.selectbox("Month", months, index=months.index(_default_month2), key="t2_month")
-        sort_by2 = st.selectbox("Sort", SORT_OPTIONS, key="t2_sort")
-
-        all_mt2 = df[sel_month2].sum()
-        grp_mt2 = df.loc[w_top_lics, sel_month2].sum()
-        share_df2 = df.loc[w_top_lics, ["Store Name", sel_month2]].copy()
-        share_df2["% of Group"] = share_df2[sel_month2].apply(lambda v: pct_value(v, grp_mt2))
-        share_df2["% of All"] = share_df2[sel_month2].apply(lambda v: pct_value(v, all_mt2))
-
-        share_df2 = sort_share_rows(share_df2, sel_month2, sort_by2)
-
-        st.caption(f"Group total for {sel_month2}: **{fmt_usd(grp_mt2)}** · {pct(grp_mt2, all_mt2)} of all stores")
-        disp2 = share_df2.reset_index()[["Store Name","License",sel_month2,"% of Group","% of All"]].copy()
-        disp2.columns = ["Store Name","License","Revenue","% of Group","% of All Stores"]
+        st.caption(f"Group total {range_label}: **{fmt_usd(grp_rev_range)}** · {pct(grp_rev_range, all_rev_range)} of all stores")
+        disp2 = share_df2.reset_index()[["#", "Store Name", "License", "_rev", "% of Group", "% of All"]].copy()
+        disp2.columns = ["#", "Store Name", "License", "Revenue", "% of Group", "% of All Stores"]
         disp2["Revenue"] = disp2["Revenue"].apply(fmt_usd)
-        disp2["% of Group"] = disp2["% of Group"].apply(lambda x: f"{x:.1f}%")
+        disp2["% of Group"]      = disp2["% of Group"].apply(lambda x: f"{x:.1f}%")
         disp2["% of All Stores"] = disp2["% of All Stores"].apply(lambda x: f"{x:.1f}%")
         st.dataframe(disp2, use_container_width=True, hide_index=True)
 
     with col_right:
         st.subheader("Revenue share")
-        if grp_mt2 > 0:
+        if grp_rev_range > 0 and not share_df2.empty:
             fig_pie2 = px.pie(
-                share_df2.reset_index(), values=sel_month2, names="Store Name",
+                share_df2.reset_index(), values="_rev", names="Store Name",
                 color_discrete_sequence=px.colors.qualitative.Set2, hole=0.4
             )
             fig_pie2.update_traces(textposition="inside", textinfo="percent+label")
-            fig_pie2.update_layout(showlegend=False, margin=dict(t=10,b=10,l=10,r=10))
+            fig_pie2.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig_pie2, use_container_width=True)
         else:
-            st.info("No revenue for the selected month.")
+            st.info("No revenue for the selected period.")
 
     share_report2 = build_share_by_store_pdf(
-        df, sel_month2, sort_by2,
+        df, to_month, sort_by2,
         top_lics=w_top_lics, threshold=threshold,
         report_date=report_date
     )
     st.download_button(
         f"⬇ Download Share by Store Report — Top {int(threshold*100)}%",
         data=share_report2,
-        file_name=f"share-by-store-top-{int(threshold*100)}pct-{slugify(sel_month2)}-{slugify(sort_by2)}.pdf",
+        file_name=f"share-by-store-top-{int(threshold*100)}pct-{slugify(range_label)}-{slugify(sort_by2)}.pdf",
         mime="application/pdf",
         key="t2_share_report"
     )
