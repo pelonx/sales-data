@@ -1118,8 +1118,8 @@ with tab2:
 
     def highlight_in(row):
         if "✅" in str(row["Group"]):
-            return ["background-color:#e6f1fb; font-weight:600" if c in ["Store Name","Group","Cumulative"] else "" for c in pareto_df.columns]
-        return ["color:#999"] * len(pareto_df.columns)
+            return ["font-weight:600; color:#1558b0"] * len(pareto_df.columns)
+        return [""] * len(pareto_df.columns)
 
     st.dataframe(
         pareto_df.style.apply(highlight_in, axis=1),
@@ -1135,7 +1135,8 @@ with tab2:
     col_left, col_right = st.columns([1,1])
     with col_left:
         st.subheader("Share by store")
-        sel_month2 = st.selectbox("Month", months, index=len(months)-1, key="t2_month")
+        _default_month2 = find_last_month_col(months)
+        sel_month2 = st.selectbox("Month", months, index=months.index(_default_month2), key="t2_month")
         sort_by2 = st.selectbox("Sort", SORT_OPTIONS, key="t2_sort")
 
         all_mt2 = df[sel_month2].sum()
