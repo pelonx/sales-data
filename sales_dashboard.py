@@ -1160,7 +1160,7 @@ with tab_top:
     from_month = fc1.selectbox("From", months, index=_from_default, key="t2_from")
     to_month   = fc2.selectbox("To",   months, index=_to_default,   key="t2_to")
     sort_by2   = fc3.selectbox("Sort", SORT_OPTIONS, key="t2_sort")
-    search2    = fc4.text_input("Search", placeholder="Store name or license…", key="t2_search", label_visibility="collapsed")
+    search2    = fc4.text_input("Search", placeholder="Store name or license…", key="t2_search")
 
     # Resolve range (swap if user picks From > To)
     fi, ti = months.index(from_month), months.index(to_month)
