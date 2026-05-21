@@ -279,14 +279,17 @@ def init_storage():
                 committed_amount TEXT,
                 notes TEXT,
                 initials TEXT,
+                person_contacted TEXT,
+                contact_method TEXT,
                 saved_at TEXT NOT NULL,
                 UNIQUE(license, contact_month)
             )
         """)
-        try:
-            conn.execute("ALTER TABLE contact_log ADD COLUMN initials TEXT")
-        except Exception:
-            pass  # column already exists
+        for col in ("initials TEXT", "person_contacted TEXT", "contact_method TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE contact_log ADD COLUMN {col}")
+            except Exception:
+                pass  # column already exists
 
 def list_saved_datasets():
     init_storage()
@@ -334,23 +337,26 @@ def upsert_contact_log_rows(rows: list[dict]):
             INSERT INTO contact_log
                 (license, store_name, contact_month, revenue,
                  date_contacted, commitment_made, committed_cadence,
-                 committed_amount, notes, initials, saved_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 committed_amount, notes, initials, person_contacted,
+                 contact_method, saved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(license, contact_month) DO UPDATE SET
-                store_name       = excluded.store_name,
-                revenue          = excluded.revenue,
-                date_contacted   = excluded.date_contacted,
-                commitment_made  = excluded.commitment_made,
-                committed_cadence= excluded.committed_cadence,
-                committed_amount = excluded.committed_amount,
-                notes            = excluded.notes,
-                initials         = excluded.initials,
-                saved_at         = excluded.saved_at
+                store_name        = excluded.store_name,
+                revenue           = excluded.revenue,
+                date_contacted    = excluded.date_contacted,
+                commitment_made   = excluded.commitment_made,
+                committed_cadence = excluded.committed_cadence,
+                committed_amount  = excluded.committed_amount,
+                notes             = excluded.notes,
+                initials          = excluded.initials,
+                person_contacted  = excluded.person_contacted,
+                contact_method    = excluded.contact_method,
+                saved_at          = excluded.saved_at
         """, [
             (r["license"], r["store_name"], r["contact_month"], r.get("revenue"),
              r.get("date_contacted"), r.get("commitment_made"), r.get("committed_cadence"),
-             r.get("committed_amount"), r.get("notes"),
-             r.get("initials"), now)
+             r.get("committed_amount"), r.get("notes"), r.get("initials"),
+             r.get("person_contacted"), r.get("contact_method"), now)
             for r in rows
         ])
 
@@ -361,7 +367,8 @@ def load_contact_log() -> pd.DataFrame:
         rows = conn.execute("""
             SELECT license, store_name, contact_month, revenue,
                    date_contacted, commitment_made, committed_cadence,
-                   committed_amount, notes, initials, saved_at
+                   committed_amount, notes, initials, person_contacted,
+                   contact_method, saved_at
             FROM contact_log
             ORDER BY saved_at DESC
         """).fetchall()
@@ -370,14 +377,16 @@ def load_contact_log() -> pd.DataFrame:
     return pd.DataFrame([dict(r) for r in rows], columns=[
         "license", "store_name", "contact_month", "revenue",
         "date_contacted", "commitment_made", "committed_cadence",
-        "committed_amount", "notes", "initials", "saved_at",
+        "committed_amount", "notes", "initials", "person_contacted",
+        "contact_method", "saved_at",
     ]).rename(columns={
         "license": "License", "store_name": "Store Name",
         "contact_month": "Month", "revenue": "Revenue",
         "date_contacted": "Date Contacted", "commitment_made": "Commitment",
         "committed_cadence": "Cadence",
         "committed_amount": "Committed Amount", "notes": "Notes",
-        "initials": "Initials", "saved_at": "Saved At",
+        "initials": "Initials", "person_contacted": "Person Contacted",
+        "contact_method": "Contact Method", "saved_at": "Saved At",
     })
 
 def delete_contact_log_entry(license_id: str, month: str):
@@ -1316,15 +1325,22 @@ with tab_contact:
             f"{contact_month} Revenue": [fmt_usd(df.loc[lic, contact_month]) for lic in top30_lics],
             "Date Contacted":     [today_date] * len(top30_lics),
             "Initials":           [""] * len(top30_lics),
+            "Person Contacted":   [""] * len(top30_lics),
+            "Contact Method":     [""] * len(top30_lics),
             "Commitment Made":    ["No"] * len(top30_lics),
             "Committed Cadence":  [""] * len(top30_lics),
             "Committed Amount":   [""] * len(top30_lics),
             "Notes":              [""] * len(top30_lics),
         })
 
-    # Ensure Initials column exists in older session state
-    if "Initials" not in st.session_state[contact_key].columns:
-        st.session_state[contact_key].insert(4, "Initials", "")
+    # Migrate older session state missing new columns
+    _sdf = st.session_state[contact_key]
+    if "Initials" not in _sdf.columns:
+        _sdf.insert(4, "Initials", "")
+    if "Person Contacted" not in _sdf.columns:
+        _sdf["Person Contacted"] = ""
+    if "Contact Method" not in _sdf.columns:
+        _sdf["Contact Method"] = ""
 
     # Search filter
     contact_search = st.text_input(
@@ -1352,6 +1368,13 @@ with tab_contact:
             "Initials": st.column_config.SelectboxColumn(
                 options=INITIALS_OPTIONS,
                 help="Initials of person who made contact",
+            ),
+            "Person Contacted": st.column_config.TextColumn(
+                help="Name of the store contact person",
+            ),
+            "Contact Method": st.column_config.SelectboxColumn(
+                options=["", "In-person", "Phone", "Email"],
+                help="How contact was made",
             ),
             "Commitment Made": st.column_config.SelectboxColumn(
                 options=["Yes", "No"], default="No", required=True
@@ -1400,9 +1423,12 @@ with tab_contact:
                     "revenue":           row.get(rev_col, ""),
                     "date_contacted":    str(row.get("Date Contacted", "")),
                     "commitment_made":   row.get("Commitment Made", ""),
-                    "committed_cadence": row.get("Committed Cadence", ""),
-                    "committed_amount":  row.get("Committed Amount", ""),
+                    "committed_cadence":  row.get("Committed Cadence", ""),
+                    "committed_amount":   row.get("Committed Amount", ""),
                     "notes":             row.get("Notes", ""),
+                    "person_contacted":  row.get("Person Contacted", ""),
+                    "contact_method":    row.get("Contact Method", ""),
+                    "initials":          row.get("Initials", ""),
                 })
         if rows_to_save:
             upsert_contact_log_rows(rows_to_save)
