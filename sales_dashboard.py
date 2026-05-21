@@ -334,15 +334,14 @@ def upsert_contact_log_rows(rows: list[dict]):
             INSERT INTO contact_log
                 (license, store_name, contact_month, revenue,
                  date_contacted, commitment_made, committed_cadence,
-                 cadence_notes, committed_amount, notes, initials, saved_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 committed_amount, notes, initials, saved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(license, contact_month) DO UPDATE SET
                 store_name       = excluded.store_name,
                 revenue          = excluded.revenue,
                 date_contacted   = excluded.date_contacted,
                 commitment_made  = excluded.commitment_made,
                 committed_cadence= excluded.committed_cadence,
-                cadence_notes    = excluded.cadence_notes,
                 committed_amount = excluded.committed_amount,
                 notes            = excluded.notes,
                 initials         = excluded.initials,
@@ -350,7 +349,7 @@ def upsert_contact_log_rows(rows: list[dict]):
         """, [
             (r["license"], r["store_name"], r["contact_month"], r.get("revenue"),
              r.get("date_contacted"), r.get("commitment_made"), r.get("committed_cadence"),
-             r.get("cadence_notes"), r.get("committed_amount"), r.get("notes"),
+             r.get("committed_amount"), r.get("notes"),
              r.get("initials"), now)
             for r in rows
         ])
@@ -362,7 +361,7 @@ def load_contact_log() -> pd.DataFrame:
         rows = conn.execute("""
             SELECT license, store_name, contact_month, revenue,
                    date_contacted, commitment_made, committed_cadence,
-                   cadence_notes, committed_amount, notes, initials, saved_at
+                   committed_amount, notes, initials, saved_at
             FROM contact_log
             ORDER BY saved_at DESC
         """).fetchall()
@@ -371,12 +370,12 @@ def load_contact_log() -> pd.DataFrame:
     return pd.DataFrame([dict(r) for r in rows], columns=[
         "license", "store_name", "contact_month", "revenue",
         "date_contacted", "commitment_made", "committed_cadence",
-        "cadence_notes", "committed_amount", "notes", "initials", "saved_at",
+        "committed_amount", "notes", "initials", "saved_at",
     ]).rename(columns={
         "license": "License", "store_name": "Store Name",
         "contact_month": "Month", "revenue": "Revenue",
         "date_contacted": "Date Contacted", "commitment_made": "Commitment",
-        "committed_cadence": "Cadence", "cadence_notes": "Cadence Notes",
+        "committed_cadence": "Cadence",
         "committed_amount": "Committed Amount", "notes": "Notes",
         "initials": "Initials", "saved_at": "Saved At",
     })
@@ -1319,7 +1318,6 @@ with tab_contact:
             "Initials":           [""] * len(top30_lics),
             "Commitment Made":    ["No"] * len(top30_lics),
             "Committed Cadence":  [""] * len(top30_lics),
-            "Cadence Notes":      [""] * len(top30_lics),
             "Committed Amount":   [""] * len(top30_lics),
             "Notes":              [""] * len(top30_lics),
         })
@@ -1360,10 +1358,7 @@ with tab_contact:
             ),
             "Committed Cadence": st.column_config.SelectboxColumn(
                 options=CADENCE_OPTIONS,
-                help="Select commitment frequency; use Cadence Notes for 'Other'",
-            ),
-            "Cadence Notes": st.column_config.TextColumn(
-                help="Describe cadence when 'Other' is selected",
+                help="Select commitment frequency",
             ),
             "Committed Amount": st.column_config.SelectboxColumn(
                 options=AMOUNT_OPTIONS,
@@ -1406,7 +1401,6 @@ with tab_contact:
                     "date_contacted":    str(row.get("Date Contacted", "")),
                     "commitment_made":   row.get("Commitment Made", ""),
                     "committed_cadence": row.get("Committed Cadence", ""),
-                    "cadence_notes":     row.get("Cadence Notes", ""),
                     "committed_amount":  row.get("Committed Amount", ""),
                     "notes":             row.get("Notes", ""),
                 })
