@@ -228,6 +228,12 @@ def find_last_month_col(months):
             return col
     return months[-1]
 
+def last_n_month_cols(months, n=3):
+    """Return up to the last n columns ending at the previous calendar month."""
+    anchor = find_last_month_col(months)
+    idx = months.index(anchor)
+    return months[max(0, idx - n + 1): idx + 1]
+
 SORT_OPTIONS = ["Highest first", "Lowest first", "Store name", "License #"]
 
 def sort_share_rows(share_df, revenue_col, sort_by):
@@ -965,12 +971,12 @@ top_store = all_totals.idxmax()
 report_date = datetime.now().strftime("%B %d, %Y")
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["📊 All Stores", f"⭐ Top {int(threshold*100)}% Stores", "📋 Store Contact Form"])
+tab_top, tab_all, tab_contact = st.tabs([f"⭐ Top {int(threshold*100)}% Stores", "📊 All Stores", "📋 Store Contact Form"])
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║  TAB 1 — All stores                                             ║
+# ║  TAB — All stores                                               ║
 # ╚══════════════════════════════════════════════════════════════════╝
-with tab1:
+with tab_all:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Revenue", fmt_usd(grand))
     c2.metric("Avg Monthly", fmt_usd(avg_month))
@@ -1081,15 +1087,28 @@ with tab1:
     )
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║  TAB 2 — Pareto / top X%                                        ║
+# ║  TAB — Pareto / top X%                                          ║
 # ╚══════════════════════════════════════════════════════════════════╝
-with tab2:
-    top_rev = df.loc[top_lics, months].sum().sum()
-    act_pct = pct_value(top_rev, grand)
-    top_avg = df.loc[top_lics, months].sum().mean()
+with tab_top:
+    # ── Time window filter ────────────────────────────────────────────────────
+    _default_window = last_n_month_cols(months, 3)
+    window_months = st.multiselect(
+        "Time window", months, default=_default_window, key="t2_window",
+        help="Months included in Pareto ranking and group metrics"
+    )
+    if not window_months:
+        window_months = _default_window
+
+    w_totals = df[window_months].sum(axis=1)
+    w_grand = w_totals.sum()
+    w_top_lics, _ = compute_pareto(df, window_months, threshold)
+
+    top_rev = df.loc[w_top_lics, window_months].sum().sum()
+    act_pct = pct_value(top_rev, w_grand)
+    top_avg = df.loc[w_top_lics, window_months].sum().mean()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Stores in Group", f"{len(top_lics)} of {len(all_lics)}")
+    c1.metric("Stores in Group", f"{len(w_top_lics)} of {len(all_lics)}")
     c2.metric("Revenue Share", f"{act_pct:.1f}%")
     c3.metric("Group Total", fmt_usd(top_rev))
     c4.metric("Avg Monthly", fmt_usd(top_avg))
@@ -1098,12 +1117,12 @@ with tab2:
 
     # Pareto breakdown table
     st.subheader("Pareto breakdown")
-    sorted_lics = all_totals.sort_values(ascending=False).index.tolist()
+    sorted_lics = w_totals.sort_values(ascending=False).index.tolist()
     cum = 0
     pareto_rows = []
     for i, lic in enumerate(sorted_lics, 1):
-        tot = all_totals[lic]
-        sp = pct_value(tot, grand)
+        tot = w_totals[lic]
+        sp = pct_value(tot, w_grand)
         cum += sp
         pareto_rows.append({
             "#": i,
@@ -1112,7 +1131,7 @@ with tab2:
             "Total": fmt_usd(tot),
             "Share": f"{sp:.1f}%",
             "Cumulative": f"{min(cum,100):.1f}%",
-            "Group": "✅ IN" if lic in top_lics else "out",
+            "Group": "✅ IN" if lic in w_top_lics else "out",
         })
     pareto_df = pd.DataFrame(pareto_rows)
 
@@ -1126,8 +1145,8 @@ with tab2:
         use_container_width=True, hide_index=True
     )
 
-    remaining_pct = max(0, 100 - act_pct) if grand else 0.0
-    st.caption(f"Remaining {len(all_lics)-len(top_lics)} store{'s' if len(all_lics)-len(top_lics)!=1 else ''} account for {remaining_pct:.1f}% of total revenue.")
+    remaining_pct = max(0, 100 - act_pct) if w_grand else 0.0
+    st.caption(f"Remaining {len(all_lics)-len(w_top_lics)} store{'s' if len(all_lics)-len(w_top_lics)!=1 else ''} account for {remaining_pct:.1f}% of total revenue · window: {', '.join(window_months)}")
 
     st.divider()
 
@@ -1140,8 +1159,8 @@ with tab2:
         sort_by2 = st.selectbox("Sort", SORT_OPTIONS, key="t2_sort")
 
         all_mt2 = df[sel_month2].sum()
-        grp_mt2 = df.loc[top_lics, sel_month2].sum()
-        share_df2 = df.loc[top_lics, ["Store Name", sel_month2]].copy()
+        grp_mt2 = df.loc[w_top_lics, sel_month2].sum()
+        share_df2 = df.loc[w_top_lics, ["Store Name", sel_month2]].copy()
         share_df2["% of Group"] = share_df2[sel_month2].apply(lambda v: pct_value(v, grp_mt2))
         share_df2["% of All"] = share_df2[sel_month2].apply(lambda v: pct_value(v, all_mt2))
 
@@ -1170,7 +1189,7 @@ with tab2:
 
     share_report2 = build_share_by_store_pdf(
         df, sel_month2, sort_by2,
-        top_lics=top_lics, threshold=threshold,
+        top_lics=w_top_lics, threshold=threshold,
         report_date=report_date
     )
     st.download_button(
@@ -1185,7 +1204,7 @@ with tab2:
 
     # Monthly totals — group vs all
     st.subheader("Monthly totals — group vs all stores")
-    grp_m = df.loc[top_lics, months].sum()
+    grp_m = df.loc[w_top_lics, months].sum()
     all_m = df[months].sum()
     fig_bar2 = go.Figure()
     fig_bar2.add_trace(go.Bar(x=months, y=[grp_m[m] for m in months], name=f"Top {int(threshold*100)}% stores", marker_color=BLUE))
@@ -1210,7 +1229,7 @@ with tab2:
 
     # Trend chart (top stores only)
     st.subheader("Store trends")
-    top_names = df.loc[top_lics, "Store Name"].tolist()
+    top_names = df.loc[w_top_lics, "Store Name"].tolist()
     sel_stores2 = st.multiselect("Select stores", top_names, default=top_names, key="t2_trend")
     if sel_stores2:
         lic_map2 = {v: k for k, v in df["Store Name"].to_dict().items()}
@@ -1231,7 +1250,7 @@ with tab2:
         st.plotly_chart(fig_line2, use_container_width=True)
 
     st.divider()
-    pdf_buf2 = build_pdf(df, months, top_lics=top_lics, threshold=threshold, report_date=report_date)
+    pdf_buf2 = build_pdf(df, months, top_lics=w_top_lics, threshold=threshold, report_date=report_date)
     st.download_button(
         f"⬇ Download PDF Report — Top {int(threshold*100)}%",
         data=pdf_buf2,
@@ -1240,9 +1259,9 @@ with tab2:
     )
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║  TAB 3 — Store Contact Form                                      ║
+# ║  TAB — Store Contact Form                                        ║
 # ╚══════════════════════════════════════════════════════════════════╝
-with tab3:
+with tab_contact:
     contact_month = find_last_month_col(months)
     today_date = datetime.now().date()
 
