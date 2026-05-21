@@ -45,10 +45,16 @@ if "password" in st.secrets:
 
 # ── Page header ────────────────────────────────────────────────────────────────
 _logo_path = Path(__file__).parent / "logo.png"
-_logo_col, _title_col = st.columns([1, 4])
 if _logo_path.exists():
-    _logo_col.image(str(_logo_path), width=120)
-_title_col.markdown("<h1 style='margin:0; padding-left:10px; line-height:1.2'>Store Sales Dashboard</h1>", unsafe_allow_html=True)
+    import base64 as _b64
+    _logo_b64 = _b64.b64encode(_logo_path.read_bytes()).decode()
+    st.markdown(f"""
+<div style="display:flex; align-items:center; gap:10px; margin-bottom:8px">
+    <img src="data:image/png;base64,{_logo_b64}" height="60">
+    <h1 style="margin:0; line-height:1.2">Store Sales Dashboard</h1>
+</div>""", unsafe_allow_html=True)
+else:
+    st.markdown("<h1>Store Sales Dashboard</h1>", unsafe_allow_html=True)
 st.divider()
 
 BLUE = "#378ADD"
