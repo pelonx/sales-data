@@ -1873,15 +1873,17 @@ with tab_orders:
 
     # Store drill-down
     st.subheader("Store Order Detail")
-    _top_store = (
-        paid_view.groupby("Client")["Line Total"].sum().idxmax()
-        if not paid_view.empty else None
-    )
     store_names = (
         paid_view.groupby("Client")["Line Total"].sum()
         .sort_values(ascending=False).index.tolist()
     )
-    _default_idx = store_names.index(_top_store) if _top_store in store_names else 0
+    # Default to whichever order-data store matches the revenue dashboard's #1 store
+    _default_idx = 0
+    for _top_lic in w_top_lics:
+        _matches = paid_view[paid_view["License #"].astype(str) == str(_top_lic)]["Client"].unique()
+        if len(_matches) > 0 and _matches[0] in store_names:
+            _default_idx = store_names.index(_matches[0])
+            break
     selected_store = st.selectbox("Select store", store_names, index=_default_idx, key="ord_store_select")
     if selected_store:
         store_orders = paid_view[paid_view["Client"] == selected_store].copy()
