@@ -322,10 +322,10 @@ def load_order_sheet_as_df(sheet_url, gid="0"):
     resp = _req.get(csv_url, headers=headers, allow_redirects=True, timeout=15)
     if resp.status_code != 200:
         raise ValueError(
-            f"Google returned HTTP {resp.status_code} for the export URL.\n"
-            f"URL tried: {csv_url}\n"
-            f"Confirm the sheet is shared as 'Anyone with the link can view' "
-            f"and the spreadsheet ID is correct."
+            f"Google returned HTTP {resp.status_code}. "
+            f"Try using a Publish-to-web CSV URL instead: in Google Sheets go to "
+            f"File → Share → Publish to web → choose the sheet → CSV → Publish, "
+            f"then paste that URL here. (URL tried: {csv_url})"
         )
     from io import StringIO as _StringIO
     raw = pd.read_csv(_StringIO(resp.text)).dropna(how="all").dropna(axis=1, how="all")
@@ -1110,7 +1110,8 @@ with st.sidebar:
     with st.expander("Link a Google Sheet" if not get_setting("order_sheet_url") else "Change order sheet"):
         _cur_url = get_setting("order_sheet_url", "")
         _cur_gid = get_setting("order_sheet_gid", "0")
-        _new_url = st.text_input("Google Sheet URL", value=_cur_url, key="order_sheet_url_input",
+        st.caption("Tip: if you get a 400 error, use a Publish-to-web CSV URL — in Google Sheets: File → Share → Publish to web → select sheet → CSV → Publish.")
+        _new_url = st.text_input("Google Sheet URL or published CSV URL", value=_cur_url, key="order_sheet_url_input",
                                   placeholder="https://docs.google.com/spreadsheets/d/…")
         _new_gid = st.text_input("Worksheet gid", value=_cur_gid, key="order_sheet_gid_input",
                                   help="gid from the sheet tab URL; 0 for first sheet")
