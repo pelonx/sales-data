@@ -1705,6 +1705,11 @@ with tab_orders:
         st.info("Upload an order detail file (.xlsx or .csv) in the sidebar to enable this tab.")
         st.stop()
 
+    # Compute date bounds from full dataset before any filtering
+    _all_dates = ord_df["Submitted Date"].dropna()
+    _min_date = _all_dates.min().date() if not _all_dates.empty else datetime.now().date()
+    _max_date = _all_dates.max().date() if not _all_dates.empty else datetime.now().date()
+
     # Exclude Bulk from all views
     ord_df = ord_df[ord_df["Brand"] != "Bulk"]
 
@@ -1712,10 +1717,6 @@ with tab_orders:
     fc1, fc2, fc3, _ = st.columns([1, 1, 1, 1])
     status_opts = ["All"] + sorted(ord_df["Status"].dropna().unique().tolist())
     status_filter = fc1.selectbox("Status", status_opts, key="ord_status")
-
-    _dates = ord_df["Submitted Date"].dropna()
-    _min_date = _dates.min().date() if not _dates.empty else datetime.now().date()
-    _max_date = _dates.max().date() if not _dates.empty else datetime.now().date()
     date_from = fc2.date_input("From", value=_min_date, min_value=_min_date, max_value=_max_date, key="ord_from")
     date_to   = fc3.date_input("To",   value=_max_date, min_value=_min_date, max_value=_max_date, key="ord_to")
 
