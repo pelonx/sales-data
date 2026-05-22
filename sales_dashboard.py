@@ -1896,3 +1896,47 @@ with tab_orders:
             use_container_width=True,
             hide_index=True,
         )
+
+    st.divider()
+
+    # ── Sample drops by store ─────────────────────────────────────────────────
+    st.subheader("Sample Drops by Store")
+    sample_view = view[view["Line Total"] <= 0]
+    if sample_view.empty:
+        st.info("No sample lines in the current date/status selection.")
+    else:
+        sample_pivot = sample_view.pivot_table(
+            index=["Client", "License #"],
+            columns="Brand",
+            values="Units",
+            aggfunc="sum",
+            fill_value=0,
+        ).reset_index()
+        sample_pivot.columns.name = None
+        for brand in BRANDS:
+            if brand not in sample_pivot.columns:
+                sample_pivot[brand] = 0
+
+        sample_totals = (
+            sample_view.groupby(["Client", "License #"])
+            .agg(Total_Units=("Units", "sum"), Drops=("Order #", "nunique"))
+            .reset_index()
+        )
+        sample_table = sample_totals.merge(sample_pivot, on=["Client", "License #"], how="left")
+        sample_table = sample_table.sort_values("Total_Units", ascending=False)
+        sample_table = sample_table.rename(columns={
+            "Client": "Store", "License #": "License", "Total_Units": "Total Units"
+        })[["Store", "License", "Drops", "Total Units"] + BRANDS]
+
+        st.dataframe(sample_table, use_container_width=True, hide_index=True)
+
+        # Product breakdown
+        with st.expander("Sample product detail"):
+            sample_prods = (
+                sample_view.groupby(["Client", "Brand", "Product"])["Units"]
+                .sum()
+                .reset_index()
+                .sort_values(["Client", "Units"], ascending=[True, False])
+                .rename(columns={"Client": "Store"})
+            )
+            st.dataframe(sample_prods, use_container_width=True, hide_index=True)
