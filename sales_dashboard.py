@@ -1693,12 +1693,11 @@ with tab_contact:
 # ║  TAB — Order Activity                                            ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_orders:
-    BRANDS = ["Leisure Land", "Mayfield", "K. Savage", "Bulk"]
+    BRANDS = ["Leisure Land", "Mayfield", "K. Savage"]
     BRAND_COLORS = {
         "Leisure Land": "#4C9BE8",
         "Mayfield":     "#E8844C",
         "K. Savage":    "#4CE89C",
-        "Bulk":         "#B07FE8",
     }
 
     ord_df = st.session_state.get("order_df")
@@ -1706,15 +1705,33 @@ with tab_orders:
         st.info("Upload an order detail file (.xlsx or .csv) in the sidebar to enable this tab.")
         st.stop()
 
-    # ── Status filter ─────────────────────────────────────────────────────────
+    # Exclude Bulk from all views
+    ord_df = ord_df[ord_df["Brand"] != "Bulk"]
+
+    # ── Filters ───────────────────────────────────────────────────────────────
+    fc1, fc2, fc3, _ = st.columns([1, 1, 1, 1])
     status_opts = ["All"] + sorted(ord_df["Status"].dropna().unique().tolist())
-    _s_col, _ = st.columns([1, 3])
-    status_filter = _s_col.selectbox("Status filter", status_opts, key="ord_status")
-    view = ord_df if status_filter == "All" else ord_df[ord_df["Status"] == status_filter]
+    status_filter = fc1.selectbox("Status", status_opts, key="ord_status")
+
+    _dates = ord_df["Submitted Date"].dropna()
+    _min_date = _dates.min().date() if not _dates.empty else datetime.now().date()
+    _max_date = _dates.max().date() if not _dates.empty else datetime.now().date()
+    date_from = fc2.date_input("From", value=_min_date, min_value=_min_date, max_value=_max_date, key="ord_from")
+    date_to   = fc3.date_input("To",   value=_max_date, min_value=_min_date, max_value=_max_date, key="ord_to")
+
+    view = ord_df.copy()
+    if status_filter != "All":
+        view = view[view["Status"] == status_filter]
+    if "Submitted Date" in view.columns:
+        view = view[
+            view["Submitted Date"].dt.date.between(
+                min(date_from, date_to), max(date_from, date_to)
+            )
+        ]
 
     # ── Brand KPI cards ───────────────────────────────────────────────────────
     st.subheader("Brand Summary")
-    b_cols = st.columns(4)
+    b_cols = st.columns(3)
     for bcol, brand in zip(b_cols, BRANDS):
         bdf = view[view["Brand"] == brand]
         bcol.metric(brand, fmt_usd(bdf["Line Total"].sum()))
@@ -1735,7 +1752,7 @@ with tab_orders:
         brand_summary, x="Revenue", y="Brand", orientation="h",
         color="Brand", color_discrete_map=BRAND_COLORS, text_auto="$.0f",
     )
-    fig_rev.update_layout(showlegend=False, margin=dict(t=10, b=10), height=260,
+    fig_rev.update_layout(showlegend=False, margin=dict(t=10, b=10), height=220,
                           xaxis_tickprefix="$", xaxis_tickformat=",")
     fig_rev.update_yaxes(autorange="reversed")
     ch1.plotly_chart(fig_rev, use_container_width=True)
@@ -1744,7 +1761,7 @@ with tab_orders:
         brand_summary, x="Units", y="Brand", orientation="h",
         color="Brand", color_discrete_map=BRAND_COLORS, text_auto=True,
     )
-    fig_units.update_layout(showlegend=False, margin=dict(t=10, b=10), height=260)
+    fig_units.update_layout(showlegend=False, margin=dict(t=10, b=10), height=220)
     fig_units.update_yaxes(autorange="reversed")
     ch2.plotly_chart(fig_units, use_container_width=True)
 
@@ -1770,12 +1787,13 @@ with tab_orders:
 
     st.divider()
 
-    # ── Top products per brand ────────────────────────────────────────────────
+    # ── Top products per brand (exclude $0 samples) ───────────────────────────
     st.subheader("Top Products by Brand")
+    paid_view = view[view["Line Total"] > 0]
     brand_tabs = st.tabs(BRANDS)
     for btab, brand in zip(brand_tabs, BRANDS):
         with btab:
-            bdf = view[view["Brand"] == brand]
+            bdf = paid_view[paid_view["Brand"] == brand]
             top_prods = (
                 bdf.groupby("Product")
                 .agg(Units=("Units", "sum"), Revenue=("Line Total", "sum"))
@@ -1797,31 +1815,4 @@ with tab_orders:
                 fig_prod.update_yaxes(autorange="reversed")
                 st.plotly_chart(fig_prod, use_container_width=True)
             else:
-                st.info(f"No {brand} lines in current selection.")
-
-    st.divider()
-
-    # ── Rep performance ───────────────────────────────────────────────────────
-    st.subheader("Rep Performance")
-    if "Submitted By" in view.columns:
-        rep_summary = (
-            view.groupby("Submitted By")
-            .agg(Revenue=("Line Total", "sum"), Orders=("Order #", "nunique"), Units=("Units", "sum"))
-            .sort_values("Revenue", ascending=False)
-            .reset_index()
-        )
-        rc1, rc2 = st.columns([2, 1])
-        fig_rep = px.bar(
-            rep_summary, x="Revenue", y="Submitted By", orientation="h",
-            color_discrete_sequence=[BLUE], text_auto="$.0f",
-        )
-        fig_rep.update_layout(
-            showlegend=False, margin=dict(t=10, b=10),
-            height=max(200, len(rep_summary) * 48),
-            xaxis_tickprefix="$", xaxis_tickformat=",",
-        )
-        fig_rep.update_yaxes(autorange="reversed")
-        rc1.plotly_chart(fig_rep, use_container_width=True)
-        rep_disp = rep_summary.copy()
-        rep_disp["Revenue"] = rep_disp["Revenue"].apply(fmt_usd)
-        rc2.dataframe(rep_disp, use_container_width=True, hide_index=True)
+                st.info(f"No paid {brand} lines in current selection.")
