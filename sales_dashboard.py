@@ -1693,11 +1693,11 @@ with tab_contact:
 # ║  TAB — Order Activity                                            ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_orders:
-    BRANDS = ["Leisure Land", "Mayfield", "K. Savage"]
+    BRANDS = ["K. Savage", "Mayfield", "Leisure Land"]
     BRAND_COLORS = {
-        "Leisure Land": "#4C9BE8",
-        "Mayfield":     "#E8844C",
         "K. Savage":    "#4CE89C",
+        "Mayfield":     "#E8844C",
+        "Leisure Land": "#4C9BE8",
     }
 
     ord_df = st.session_state.get("order_df")
@@ -1873,8 +1873,16 @@ with tab_orders:
 
     # Store drill-down
     st.subheader("Store Order Detail")
-    store_names = sorted(paid_view["Client"].dropna().unique().tolist())
-    selected_store = st.selectbox("Select store", store_names, key="ord_store_select")
+    _top_store = (
+        paid_view.groupby("Client")["Line Total"].sum().idxmax()
+        if not paid_view.empty else None
+    )
+    store_names = (
+        paid_view.groupby("Client")["Line Total"].sum()
+        .sort_values(ascending=False).index.tolist()
+    )
+    _default_idx = store_names.index(_top_store) if _top_store in store_names else 0
+    selected_store = st.selectbox("Select store", store_names, index=_default_idx, key="ord_store_select")
     if selected_store:
         store_orders = paid_view[paid_view["Client"] == selected_store].copy()
         store_orders["Submitted Date"] = store_orders["Submitted Date"].dt.strftime("%m/%d/%Y")
