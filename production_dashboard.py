@@ -241,23 +241,27 @@ with tab_brand:
         st.info("No Brand Sales records found in the loaded data.")
     else:
         # ── Filters ───────────────────────────────────────────────────────────
-        bf1, bf2, bf3, bf4 = st.columns([2, 2, 1, 1])
+        bf1, bf2, bf3, bf4, bf5, bf6 = st.columns([2, 2, 2, 1, 1, 1])
         _b_facilities = ["All"] + sorted(brand_df["Facility"].unique().tolist())
         _b_brands     = ["All"] + sorted(brand_df["Brand"].dropna().unique().tolist())
+        _b_types      = ["All"] + sorted(brand_df["Type"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
         _b_dates      = brand_df["Transfer Date"].dropna()
         _b_min = _b_dates.min().date() if not _b_dates.empty else datetime.now().date()
         _b_max = _b_dates.max().date() if not _b_dates.empty else datetime.now().date()
 
         sel_b_facility = bf1.selectbox("Facility", _b_facilities, key="bs_facility")
         sel_b_brand    = bf2.selectbox("Brand",    _b_brands,     key="bs_brand")
-        b_from = bf3.date_input("From", value=_b_min, min_value=_b_min, max_value=_b_max, key="bs_from")
-        b_to   = bf4.date_input("To",   value=_b_max, min_value=_b_min, max_value=_b_max, key="bs_to")
+        sel_b_type     = bf3.selectbox("Type",     _b_types,      key="bs_type")
+        b_from = bf4.date_input("From", value=_b_min, min_value=_b_min, max_value=_b_max, key="bs_from")
+        b_to   = bf5.date_input("To",   value=_b_max, min_value=_b_min, max_value=_b_max, key="bs_to")
 
         bview = brand_df.copy()
         if sel_b_facility != "All":
             bview = bview[bview["Facility"] == sel_b_facility]
         if sel_b_brand != "All":
             bview = bview[bview["Brand"] == sel_b_brand]
+        if sel_b_type != "All":
+            bview = bview[bview["Type"] == sel_b_type]
         bview = bview[bview["Transfer Date"].dt.date.between(b_from, b_to)]
 
         bview_g = bview[bview["Units UOM"] == "Grams"]
@@ -279,7 +283,7 @@ with tab_brand:
         # ── Strain summary table ───────────────────────────────────────────────
         st.subheader("Strain by Brand")
         strain_tbl = (
-            bview_g.groupby(["Brand", "Strain", "Product"])
+            bview_g.groupby(["Brand", "Type", "Strain", "Product"])
             .agg(Grams=("Units", "sum"), Revenue=("Total", "sum"))
             .reset_index()
             .rename(columns={"Product": "Grade"})
@@ -394,23 +398,27 @@ with tab_wholesale:
         st.info("No Wholesale records found in the loaded data.")
     else:
         # ── Filters ───────────────────────────────────────────────────────────
-        wf1, wf2, wf3, wf4 = st.columns([2, 2, 1, 1])
+        wf1, wf2, wf3, wf4, wf5, wf6 = st.columns([2, 2, 2, 1, 1, 1])
         _w_facilities = ["All"] + sorted(ws_df["Facility"].unique().tolist())
         _w_vendors    = ["All"] + sorted(ws_df["Vendor"].dropna().unique().tolist())
+        _w_types      = ["All"] + sorted(ws_df["Type"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
         _w_dates      = ws_df["Transfer Date"].dropna()
         _w_min = _w_dates.min().date() if not _w_dates.empty else datetime.now().date()
         _w_max = _w_dates.max().date() if not _w_dates.empty else datetime.now().date()
 
         sel_w_facility = wf1.selectbox("Facility", _w_facilities, key="ws_facility")
         sel_w_vendor   = wf2.selectbox("Vendor",   _w_vendors,    key="ws_vendor")
-        w_from = wf3.date_input("From", value=_w_min, min_value=_w_min, max_value=_w_max, key="ws_from")
-        w_to   = wf4.date_input("To",   value=_w_max, min_value=_w_min, max_value=_w_max, key="ws_to")
+        sel_w_type     = wf3.selectbox("Type",     _w_types,      key="ws_type")
+        w_from = wf4.date_input("From", value=_w_min, min_value=_w_min, max_value=_w_max, key="ws_from")
+        w_to   = wf5.date_input("To",   value=_w_max, min_value=_w_min, max_value=_w_max, key="ws_to")
 
         wview = ws_df.copy()
         if sel_w_facility != "All":
             wview = wview[wview["Facility"] == sel_w_facility]
         if sel_w_vendor != "All":
             wview = wview[wview["Vendor"] == sel_w_vendor]
+        if sel_w_type != "All":
+            wview = wview[wview["Type"] == sel_w_type]
         wview = wview[wview["Transfer Date"].dt.date.between(w_from, w_to)]
 
         wview_g = wview[wview["Units UOM"] == "Grams"]
@@ -431,7 +439,7 @@ with tab_wholesale:
         # ── Strain summary table ───────────────────────────────────────────────
         st.subheader("Strain Summary")
         w_strain_tbl = (
-            wview_g.groupby(["Vendor", "Strain", "Product"])
+            wview_g.groupby(["Vendor", "Type", "Strain", "Product"])
             .agg(Grams=("Units", "sum"), Revenue=("Total", "sum"))
             .reset_index()
             .rename(columns={"Product": "Grade"})
