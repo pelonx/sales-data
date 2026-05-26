@@ -2023,8 +2023,8 @@ with tab_mom:
     else:
         # Month selectors — default to two most recent columns
         mc1, mc2, _ = st.columns([2, 2, 3])
-        prev_month = mc1.selectbox("Base month", months, index=len(months) - 2, key="mom_base")
-        curr_month = mc2.selectbox("Compare month", months, index=len(months) - 1, key="mom_curr")
+        prev_month = mc1.selectbox("Last month", months, index=len(months) - 2, key="mom_base")
+        curr_month = mc2.selectbox("Current month", months, index=len(months) - 1, key="mom_curr")
 
         if prev_month == curr_month:
             st.warning("Select two different months to compare.")
