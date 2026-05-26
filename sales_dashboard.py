@@ -2214,18 +2214,27 @@ with tab_mom:
                 | disp_mom["License"].astype(str).str.contains(_q, na=False)
             ]
 
-        st.dataframe(
-            disp_mom,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Last Month":     st.column_config.NumberColumn(prev_month,   format="$%.0f"),
-                "Current Month":  st.column_config.NumberColumn(_curr_label,  format="$%.0f"),
-                "$ Change":       st.column_config.NumberColumn("$ Change",   format="$%.0f"),
-                "% Change":       st.column_config.NumberColumn("% Change",   format="%.1f%%"),
-                "Store Name":     st.column_config.TextColumn(width="large"),
-            },
+        def _mom_row_style(row):
+            pct = row.get("% Change")
+            if pct is not None and not pd.isna(pct):
+                if pct <= -25:
+                    return ["background-color: rgba(255,150,150,0.25)"] * len(row)
+                if pct >= 25:
+                    return ["background-color: rgba(100,220,130,0.25)"] * len(row)
+            return [""] * len(row)
+
+        styled_mom = (
+            disp_mom.rename(columns={"Last Month": prev_month, "Current Month": _curr_label})
+            .style
+            .apply(_mom_row_style, axis=1)
+            .format({
+                prev_month:    "${:,.0f}",
+                _curr_label:   "${:,.0f}",
+                "$ Change":    "${:,.0f}",
+                "% Change":    lambda v: f"{v:+.1f}%" if pd.notna(v) else "—",
+            })
         )
+        st.dataframe(styled_mom, use_container_width=True, hide_index=True)
         st.caption(f"{len(disp_mom)} store{'s' if len(disp_mom) != 1 else ''}")
 
         # ── Top movers chart ──────────────────────────────────────────────────
