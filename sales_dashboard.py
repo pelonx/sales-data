@@ -1949,6 +1949,44 @@ with tab_orders:
 
     st.divider()
 
+    # ── Orders by Store ───────────────────────────────────────────────────────
+    st.subheader("Orders by Store")
+
+    obs_f1, obs_f2, obs_f3 = st.columns([2, 1, 1])
+    _obs_stores = ["All Stores"] + sorted(paid_view["Client"].dropna().unique().tolist())
+    obs_store = obs_f1.selectbox("Store", _obs_stores, index=0, key="obs_store")
+    _obs_dates = paid_view["Submitted Date"].dropna()
+    _obs_min = _obs_dates.min().date() if not _obs_dates.empty else _min_date
+    _obs_max = _obs_dates.max().date() if not _obs_dates.empty else _max_date
+    obs_from = obs_f2.date_input("From", value=_obs_min, min_value=_obs_min, max_value=_obs_max, key="obs_from")
+    obs_to   = obs_f3.date_input("To",   value=_obs_max, min_value=_obs_min, max_value=_obs_max, key="obs_to")
+
+    obs_view = paid_view.copy()
+    if obs_store != "All Stores":
+        obs_view = obs_view[obs_view["Client"] == obs_store]
+    obs_view = obs_view[obs_view["Submitted Date"].dt.date.between(obs_from, obs_to)]
+
+    obs_table = (
+        obs_view.groupby(["Client", "License #", "Order #", "Submitted Date"])
+        .agg(Revenue=("Line Total", "sum"), Units=("Units", "sum"))
+        .reset_index()
+        .sort_values("Submitted Date", ascending=False)
+    )
+    obs_table["Submitted Date"] = obs_table["Submitted Date"].dt.strftime("%m/%d/%Y")
+    obs_table = obs_table.rename(columns={"Client": "Store", "Submitted Date": "Date"})
+
+    st.dataframe(
+        obs_table,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Revenue": st.column_config.NumberColumn("Revenue", format="$%.0f"),
+        },
+    )
+    st.caption(f"{obs_table['Order #'].nunique()} orders · {fmt_usd(obs_table['Revenue'].sum())} total")
+
+    st.divider()
+
     # Store drill-down
     st.subheader("Store Order Detail")
     store_names = sorted(paid_view["Client"].dropna().unique().tolist())
