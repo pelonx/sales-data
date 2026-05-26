@@ -164,16 +164,26 @@ def parse_input(text):
     if not records:
         raise ValueError("No store rows found.")
 
+    # Check for exact duplicate rows before aggregation
+    _seen_rows: set = set()
+    exact_dup_count = 0
+    deduped_records = []
+    for rec in records:
+        _key = tuple(rec.get(k) for k in ["License", "Store Name"] + months)
+        if _key in _seen_rows:
+            exact_dup_count += 1
+        else:
+            _seen_rows.add(_key)
+            deduped_records.append(rec)
+    records = deduped_records
+
     # Aggregate duplicate licenses: sum revenue columns, combine distinct store names
     agg: dict = {}
-    dup_licenses: list = []
     for rec in records:
         lic = rec["License"]
         if lic not in agg:
             agg[lic] = rec.copy()
         else:
-            if lic not in dup_licenses:
-                dup_licenses.append(lic)
             existing_name = agg[lic]["Store Name"]
             new_name = rec["Store Name"]
             if new_name and new_name not in existing_name:
@@ -182,7 +192,7 @@ def parse_input(text):
                 agg[lic][m] = agg[lic].get(m, 0) + rec.get(m, 0)
 
     df = pd.DataFrame(list(agg.values())).set_index("License")
-    return df, months, stripped, dup_licenses
+    return df, months, stripped, exact_dup_count
 
 def google_sheet_csv_url(sheet_url, gid="0"):
     sheet_url = sheet_url.strip()
@@ -1151,7 +1161,7 @@ with st.sidebar:
 df, months, stripped = None, [], []
 if raw_input.strip():
     try:
-        df, months, stripped, dup_licenses = parse_input(raw_input)
+        df, months, stripped, rev_exact_dups = parse_input(raw_input)
     except Exception as e:
         st.error(str(e))
 
@@ -1162,11 +1172,9 @@ if df is None:
 if stripped:
     st.warning(f"Auto-removed column{'s' if len(stripped)>1 else ''}: {', '.join(f'"{s}"' for s in stripped)}")
 
-if dup_licenses:
+if rev_exact_dups:
     st.warning(
-        f"⚠️ Revenue data: {len(dup_licenses)} duplicate license "
-        f"{'number' if len(dup_licenses)==1 else 'numbers'} detected — rows were merged by summing revenue. "
-        f"Duplicates: {', '.join(dup_licenses)}"
+        f"⚠️ Revenue data: {rev_exact_dups} exact duplicate row{'s' if rev_exact_dups!=1 else ''} removed before processing."
     )
 
 _order_df_check = st.session_state.get("order_df")
