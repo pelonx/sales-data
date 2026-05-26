@@ -1950,12 +1950,19 @@ with tab_orders:
             store_orders["Submitted Date"].dt.date.between(sod_from, sod_to)
         ]
 
+        import re as _re2
+        store_orders["_ord_num"] = store_orders["Order #"].apply(
+            lambda x: int(_re2.search(r"(\d+)$", str(x)).group(1)) if _re2.search(r"(\d+)$", str(x)) else 0
+        )
+        store_orders = store_orders.sort_values("_ord_num")
         store_orders["Submitted Date"] = store_orders["Submitted Date"].dt.strftime("%m/%d/%Y")
         store_orders["Line Total"] = store_orders["Line Total"].apply(fmt_usd)
         detail_cols = ["Order #", "Submitted Date", "Brand", "Product", "Units", "Line Total", "Status"]
+        if selected_store == "All Stores":
+            detail_cols = ["Client"] + detail_cols
         detail_cols = [c for c in detail_cols if c in store_orders.columns]
         st.dataframe(
-            store_orders[detail_cols].sort_values("Order #"),
+            store_orders[detail_cols],
             use_container_width=True,
             hide_index=True,
         )
