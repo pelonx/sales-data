@@ -2095,7 +2095,16 @@ with tab_mom:
         k3.metric("$ Change",    fmt_usd(total_change), delta=fmt_usd(total_change))
         k4.metric("% Change",    f"{total_pct:+.1f}%",  delta=f"{total_pct:+.1f}%")
         k5.metric("Stores",      f"▲ {gainers}  ▼ {losers}")
-        st.caption(f"Current month ({_curr_label}) pulled from order sheet · {len(_curr_paid)} paid lines across {_curr_rev.shape[0]} stores")
+        _raw_curr_total = _curr_paid["Line Total"].sum()
+        st.caption(
+            f"Current month ({_curr_label}) · {len(_curr_paid)} paid lines · "
+            f"raw order-sheet total: {fmt_usd(_raw_curr_total)} · "
+            f"shown in table: {fmt_usd(total_curr)} · "
+            f"order sheet date range: "
+            f"{_ord_df_mom['Submitted Date'].min().strftime('%m/%d/%Y') if not _ord_df_mom['Submitted Date'].isna().all() else 'N/A'}"
+            f" – "
+            f"{_ord_df_mom['Submitted Date'].max().strftime('%m/%d/%Y') if not _ord_df_mom['Submitted Date'].isna().all() else 'N/A'}"
+        )
 
         st.divider()
 
