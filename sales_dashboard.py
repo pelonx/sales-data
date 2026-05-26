@@ -1922,10 +1922,7 @@ with tab_orders:
 
     # Store drill-down
     st.subheader("Store Order Detail")
-    store_names = (
-        paid_view.groupby("Client")["Line Total"].sum()
-        .sort_values(ascending=False).index.tolist()
-    )
+    store_names = sorted(paid_view["Client"].dropna().unique().tolist())
     selected_store = st.selectbox("Select store", ["All Stores"] + store_names, index=0, key="ord_store_select")
     if selected_store:
         store_orders = (
