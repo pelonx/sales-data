@@ -1863,7 +1863,7 @@ with tab_orders:
     store_pivot = store_summary.pivot_table(
         index=["Client", "License #"],
         columns="Brand",
-        values="Units",
+        values="Revenue",
         aggfunc="sum",
         fill_value=0,
     ).reset_index()
@@ -1914,6 +1914,7 @@ with tab_orders:
         column_config={
             "Revenue": st.column_config.NumberColumn("Revenue", format="$%.0f"),
             "Last Order": st.column_config.DatetimeColumn("Last Order", format="MM/DD/YYYY"),
+            **{brand: st.column_config.NumberColumn(brand, format="$%.0f") for brand in BRANDS},
         },
     )
 
