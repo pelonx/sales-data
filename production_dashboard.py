@@ -390,34 +390,34 @@ with tab_brand:
         if not ppg_data.empty:
             _ppg_types = sorted(ppg_data["Type"].unique().tolist())
             _n_t = max(len(_ppg_types), 1)
-            # Gradient shades per (brand, type): darker for first type, lighter for last
+            # One gradient shade per type — darker first, lighter last
             _ppg_cmap = {
-                f"{brand}|{t}": _shade_hex(base, 0.55 + (i / max(_n_t - 1, 1)) * 0.85)
-                for brand, base in BRAND_COLORS.items()
+                t: _shade_hex("#4CE89C", 0.5 + (i / max(_n_t - 1, 1)) * 0.9)
                 for i, t in enumerate(_ppg_types)
             }
-            ppg_data["_ck"] = ppg_data["Brand"] + "|" + ppg_data["Type"]
-            ppg_data = ppg_data.sort_values("$/gram", ascending=True)
+            # Sort strains by max $/gram so highest sits at top
+            _strain_order = (
+                ppg_data.groupby("Strain")["$/gram"].max()
+                .sort_values(ascending=True).index.tolist()
+            )
+            ppg_data["Strain"] = pd.Categorical(ppg_data["Strain"], categories=_strain_order, ordered=True)
+            ppg_data = ppg_data.sort_values(["Strain", "Type"])
             fig_ppg = px.bar(
                 ppg_data,
-                x="$/gram", y="Strain", color="_ck",
+                x="$/gram", y="Strain", color="Type",
                 orientation="h", barmode="group",
                 color_discrete_map=_ppg_cmap,
                 text=ppg_data["$/gram"].apply(lambda v: f"${v:.2f}"),
-                custom_data=["Brand", "Type"],
+                custom_data=["Brand"],
             )
-            for trace in fig_ppg.data:
-                if "|" in trace.name:
-                    b_part, t_part = trace.name.split("|", 1)
-                    trace.name = f"{t_part} ({b_part})"
             fig_ppg.update_traces(
-                hovertemplate="%{customdata[0]} · %{customdata[1]}<br>$/gram: %{x:.2f}<extra></extra>",
+                hovertemplate="%{y} (%{customdata[0]})<br>$/gram: %{x:.2f}<extra></extra>",
                 textposition="outside", cliponaxis=False,
             )
             fig_ppg.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font_color="#e3e3d8", showlegend=True, legend_title="Type",
-                height=max(350, ppg_data["Strain"].nunique() * 36),
+                height=max(350, ppg_data["Strain"].nunique() * 40),
                 margin=dict(l=0, r=60, t=10, b=10),
                 xaxis_title="$ per gram", yaxis_title="",
             )
@@ -537,10 +537,15 @@ with tab_wholesale:
             _w_types = sorted(w_ppg_data["Type"].unique().tolist())
             _n_wt = max(len(_w_types), 1)
             _w_type_cmap = {
-                t: _shade_hex("#4CE89C", 0.55 + (i / max(_n_wt - 1, 1)) * 0.85)
+                t: _shade_hex("#4CE89C", 0.5 + (i / max(_n_wt - 1, 1)) * 0.9)
                 for i, t in enumerate(_w_types)
             }
-            w_ppg_data = w_ppg_data.sort_values("$/gram", ascending=True)
+            _w_strain_order = (
+                w_ppg_data.groupby("Strain")["$/gram"].max()
+                .sort_values(ascending=True).index.tolist()
+            )
+            w_ppg_data["Strain"] = pd.Categorical(w_ppg_data["Strain"], categories=_w_strain_order, ordered=True)
+            w_ppg_data = w_ppg_data.sort_values(["Strain", "Type"])
             fig_wppg = px.bar(
                 w_ppg_data, x="$/gram", y="Strain", color="Type",
                 orientation="h", barmode="group",
