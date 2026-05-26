@@ -393,29 +393,44 @@ with tab_brand:
                 t: _shade_hex("#4CE89C", 0.5 + (i / max(_n_t - 1, 1)) * 0.9)
                 for i, t in enumerate(_ppg_types)
             }
+            # Sort product types by their median $/gram so gradient maps cheapest→most expensive
+            _prod_order = (
+                ppg_data.groupby("Product")["$/gram"].median()
+                .sort_values().index.tolist()
+            )
+            _ppg_cmap = {
+                t: _shade_hex("#4CE89C", 0.45 + (i / max(len(_prod_order) - 1, 1)) * 0.85)
+                for i, t in enumerate(_prod_order)
+            }
+            # Sort strains by total $/gram (sum of segments) descending → highest at top
             _strain_order = (
-                ppg_data.groupby("Strain")["$/gram"].max()
+                ppg_data.groupby("Strain")["$/gram"].sum()
                 .sort_values(ascending=True).index.tolist()
             )
             ppg_data["Strain"] = pd.Categorical(ppg_data["Strain"], categories=_strain_order, ordered=True)
+            ppg_data["Product"] = pd.Categorical(ppg_data["Product"], categories=_prod_order, ordered=True)
             ppg_data = ppg_data.sort_values(["Strain", "Product"])
+            ppg_data["_label"] = ppg_data.apply(
+                lambda r: f"${r['$/gram']:.2f}  {r['Product']}", axis=1
+            )
             fig_ppg = px.bar(
                 ppg_data,
                 x="$/gram", y="Strain", color="Product",
-                orientation="h", barmode="group",
+                orientation="h", barmode="stack",
                 color_discrete_map=_ppg_cmap,
-                text=ppg_data["$/gram"].apply(lambda v: f"${v:.2f}"),
-                custom_data=["Brand"],
+                text="_label",
+                custom_data=["Brand", "Product"],
             )
             fig_ppg.update_traces(
-                hovertemplate="%{y} (%{customdata[0]})<br>$/gram: %{x:.2f}<extra></extra>",
-                textposition="outside", cliponaxis=False,
+                textposition="inside", insidetextanchor="middle",
+                hovertemplate="%{customdata[1]}<br>%{y} (%{customdata[0]})<br>$/gram: %{x:.2f}<extra></extra>",
+                cliponaxis=False,
             )
             fig_ppg.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font_color="#e3e3d8", showlegend=True, legend_title="Product",
-                height=max(350, ppg_data["Strain"].nunique() * 40),
-                margin=dict(l=0, r=60, t=10, b=10),
+                height=max(350, ppg_data["Strain"].nunique() * 28),
+                margin=dict(l=0, r=20, t=10, b=10),
                 xaxis_title="$ per gram", yaxis_title="",
             )
             st.plotly_chart(fig_ppg, use_container_width=True)
@@ -536,26 +551,42 @@ with tab_wholesale:
                 t: _shade_hex("#4CE89C", 0.5 + (i / max(_n_wt - 1, 1)) * 0.9)
                 for i, t in enumerate(_w_prods)
             }
+            _w_prod_order = (
+                w_ppg_data.groupby("Product")["$/gram"].median()
+                .sort_values().index.tolist()
+            )
+            _w_type_cmap = {
+                t: _shade_hex("#4CE89C", 0.45 + (i / max(len(_w_prod_order) - 1, 1)) * 0.85)
+                for i, t in enumerate(_w_prod_order)
+            }
             _w_strain_order = (
-                w_ppg_data.groupby("Strain")["$/gram"].max()
+                w_ppg_data.groupby("Strain")["$/gram"].sum()
                 .sort_values(ascending=True).index.tolist()
             )
             w_ppg_data["Strain"] = pd.Categorical(w_ppg_data["Strain"], categories=_w_strain_order, ordered=True)
+            w_ppg_data["Product"] = pd.Categorical(w_ppg_data["Product"], categories=_w_prod_order, ordered=True)
             w_ppg_data = w_ppg_data.sort_values(["Strain", "Product"])
+            w_ppg_data["_label"] = w_ppg_data.apply(
+                lambda r: f"${r['$/gram']:.2f}  {r['Product']}", axis=1
+            )
             fig_wppg = px.bar(
                 w_ppg_data, x="$/gram", y="Strain", color="Product",
-                orientation="h", barmode="group",
+                orientation="h", barmode="stack",
                 color_discrete_map=_w_type_cmap,
-                text=w_ppg_data["$/gram"].apply(lambda v: f"${v:.2f}"),
+                text="_label",
+            )
+            fig_wppg.update_traces(
+                textposition="inside", insidetextanchor="middle",
+                hovertemplate="%{text}<br>$/gram: %{x:.2f}<extra></extra>",
+                cliponaxis=False,
             )
             fig_wppg.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font_color="#e3e3d8", legend_title="Product",
-                height=max(300, w_ppg_data["Strain"].nunique() * 36),
-                margin=dict(l=0, r=60, t=10, b=10),
+                height=max(300, w_ppg_data["Strain"].nunique() * 28),
+                margin=dict(l=0, r=20, t=10, b=10),
                 xaxis_title="$ per gram", yaxis_title="",
             )
-            fig_wppg.update_traces(textposition="outside", cliponaxis=False)
             st.plotly_chart(fig_wppg, use_container_width=True)
 
         st.divider()
