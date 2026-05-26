@@ -1175,10 +1175,11 @@ window_months = [m for m in _ss_window if m in months] or _default_window
 w_top_lics, _ = compute_pareto(df, window_months, threshold)
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_contact, tab_sales, tab_orders = st.tabs([
+tab_contact, tab_sales, tab_orders, tab_mom = st.tabs([
     "📋 Store Contact Form",
     "📊 Sales by Store",
     "📦 Order Activity",
+    "📅 Month over Month",
 ])
 
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -2012,3 +2013,102 @@ with tab_orders:
                 .rename(columns={"Client": "Store"})
             )
             st.dataframe(sample_prods, use_container_width=True, hide_index=True)
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  TAB — Month over Month                                          ║
+# ╚══════════════════════════════════════════════════════════════════╝
+with tab_mom:
+    if len(months) < 2:
+        st.info("Need at least two months of data for a comparison.")
+    else:
+        # Month selectors — default to two most recent columns
+        mc1, mc2, _ = st.columns([2, 2, 3])
+        prev_month = mc1.selectbox("Base month", months, index=len(months) - 2, key="mom_base")
+        curr_month = mc2.selectbox("Compare month", months, index=len(months) - 1, key="mom_curr")
+
+        if prev_month == curr_month:
+            st.warning("Select two different months to compare.")
+        else:
+            mom = df[["Store Name", prev_month, curr_month]].copy()
+            mom.index.name = "License"
+            mom = mom.reset_index()
+            mom = mom.rename(columns={prev_month: "Base", curr_month: "Compare"})
+            mom["$ Change"] = mom["Compare"] - mom["Base"]
+            mom["% Change"] = mom.apply(
+                lambda r: (r["$ Change"] / r["Base"] * 100) if r["Base"] != 0 else None,
+                axis=1,
+            )
+            mom = mom.sort_values("$ Change", ascending=False)
+
+            # ── Summary KPIs ──────────────────────────────────────────────────
+            total_base    = mom["Base"].sum()
+            total_curr    = mom["Compare"].sum()
+            total_change  = total_curr - total_base
+            total_pct     = (total_change / total_base * 100) if total_base else 0
+            gainers = (mom["$ Change"] > 0).sum()
+            losers  = (mom["$ Change"] < 0).sum()
+
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric(prev_month,   fmt_usd(total_base))
+            k2.metric(curr_month,   fmt_usd(total_curr))
+            k3.metric("$ Change",   fmt_usd(total_change),  delta=fmt_usd(total_change))
+            k4.metric("% Change",   f"{total_pct:+.1f}%",   delta=f"{total_pct:+.1f}%")
+            k5.metric("Stores",     f"▲ {gainers}  ▼ {losers}")
+
+            st.divider()
+
+            # ── Store-level table ─────────────────────────────────────────────
+            mom_search = st.text_input("Search stores", placeholder="Store name or license…", key="mom_search")
+            disp_mom = mom.copy()
+            if mom_search:
+                _q = mom_search.lower()
+                disp_mom = disp_mom[
+                    disp_mom["Store Name"].str.lower().str.contains(_q, na=False)
+                    | disp_mom["License"].astype(str).str.contains(_q, na=False)
+                ]
+
+            st.dataframe(
+                disp_mom,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Base":     st.column_config.NumberColumn(prev_month,    format="$%.0f"),
+                    "Compare":  st.column_config.NumberColumn(curr_month,    format="$%.0f"),
+                    "$ Change": st.column_config.NumberColumn("$ Change",    format="$%.0f"),
+                    "% Change": st.column_config.NumberColumn("% Change",    format="%.1f%%"),
+                    "Store Name": st.column_config.TextColumn(width="large"),
+                },
+            )
+            st.caption(f"{len(disp_mom)} store{'s' if len(disp_mom) != 1 else ''}")
+
+            # ── Top movers chart ──────────────────────────────────────────────
+            st.divider()
+            st.subheader("Top Movers")
+            n_movers = 15
+            top_up   = mom[mom["$ Change"] > 0].nlargest(n_movers,  "$ Change")
+            top_down = mom[mom["$ Change"] < 0].nsmallest(n_movers, "$ Change")
+            movers   = pd.concat([top_up, top_down]).sort_values("$ Change", ascending=True)
+
+            if not movers.empty:
+                movers["Color"] = movers["$ Change"].apply(lambda v: "#4CE89C" if v >= 0 else "#E8844C")
+                fig_mom = px.bar(
+                    movers,
+                    x="$ Change",
+                    y="Store Name",
+                    orientation="h",
+                    color="Color",
+                    color_discrete_map="identity",
+                    text=movers["$ Change"].apply(fmt_usd),
+                )
+                fig_mom.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font_color="#e3e3d8",
+                    showlegend=False,
+                    height=max(300, len(movers) * 28),
+                    margin=dict(l=0, r=20, t=10, b=10),
+                    xaxis_title="",
+                    yaxis_title="",
+                )
+                fig_mom.update_traces(textposition="outside", cliponaxis=False)
+                st.plotly_chart(fig_mom, use_container_width=True)
