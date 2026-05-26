@@ -2221,6 +2221,13 @@ with tab_mom:
                     return ["background-color: rgba(255,150,150,0.25)"] * len(row)
                 if pct >= 25:
                     return ["background-color: rgba(100,220,130,0.25)"] * len(row)
+            else:
+                # Last Month = $0 — use $ Change direction
+                chg = row.get("$ Change", 0) or 0
+                if chg > 0:
+                    return ["background-color: rgba(100,220,130,0.25)"] * len(row)
+                if chg < 0:
+                    return ["background-color: rgba(255,150,150,0.25)"] * len(row)
             return [""] * len(row)
 
         styled_mom = (
