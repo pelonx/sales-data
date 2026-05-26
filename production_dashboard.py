@@ -291,14 +291,14 @@ with tab_brand:
         bf1, bf2, bf3, bf4, bf5, bf6 = st.columns([2, 2, 2, 1, 1, 1])
         _b_facilities = ["All"] + sorted(brand_df["Facility"].unique().tolist())
         _b_brands     = ["All"] + sorted(brand_df["Brand"].dropna().unique().tolist())
-        _b_types      = ["All"] + sorted(brand_df["Type"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
+        _b_types      = ["All"] + sorted(brand_df["Product"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
         _b_dates      = brand_df["Transfer Date"].dropna()
         _b_min = _b_dates.min().date() if not _b_dates.empty else datetime.now().date()
         _b_max = _b_dates.max().date() if not _b_dates.empty else datetime.now().date()
 
         sel_b_facility = bf1.selectbox("Facility", _b_facilities, key="bs_facility")
         sel_b_brand    = bf2.selectbox("Brand",    _b_brands,     key="bs_brand")
-        sel_b_type     = bf3.selectbox("Type",     _b_types,      key="bs_type")
+        sel_b_type     = bf3.selectbox("Product",   _b_types,      key="bs_type")
         b_from = bf4.date_input("From", value=_b_min, min_value=_b_min, max_value=_b_max, key="bs_from")
         b_to   = bf5.date_input("To",   value=_b_max, min_value=_b_min, max_value=_b_max, key="bs_to")
 
@@ -308,7 +308,7 @@ with tab_brand:
         if sel_b_brand != "All":
             bview = bview[bview["Brand"] == sel_b_brand]
         if sel_b_type != "All":
-            bview = bview[bview["Type"] == sel_b_type]
+            bview = bview[bview["Product"] == sel_b_type]
         bview = bview[bview["Transfer Date"].dt.date.between(b_from, b_to)]
 
         bview_g = bview[bview["Units UOM"] == "Grams"]
@@ -330,10 +330,9 @@ with tab_brand:
         # ── Strain summary table ───────────────────────────────────────────────
         st.subheader("Strain by Brand")
         strain_tbl = (
-            bview_g.groupby(["Brand", "Type", "Strain", "Product"])
+            bview_g.groupby(["Brand", "Product", "Strain"])
             .agg(Grams=("Units", "sum"), Revenue=("Total", "sum"))
             .reset_index()
-            .rename(columns={"Product": "Grade"})
         )
         strain_tbl["$/gram"] = (
             strain_tbl["Revenue"] / strain_tbl["Grams"].replace(0, pd.NA)
@@ -383,28 +382,26 @@ with tab_brand:
         # ── $/gram by strain ───────────────────────────────────────────────────
         st.subheader("$/gram by Strain")
         ppg_data = (
-            bview_g.groupby(["Strain", "Brand", "Type"])
+            bview_g.groupby(["Strain", "Brand", "Product"])
             .apply(lambda g: g["Total"].sum() / g["Units"].sum() if g["Units"].sum() > 0 else 0)
             .reset_index(name="$/gram")
         )
         if not ppg_data.empty:
-            _ppg_types = sorted(ppg_data["Type"].unique().tolist())
+            _ppg_types = sorted(ppg_data["Product"].unique().tolist())
             _n_t = max(len(_ppg_types), 1)
-            # One gradient shade per type — darker first, lighter last
             _ppg_cmap = {
                 t: _shade_hex("#4CE89C", 0.5 + (i / max(_n_t - 1, 1)) * 0.9)
                 for i, t in enumerate(_ppg_types)
             }
-            # Sort strains by max $/gram so highest sits at top
             _strain_order = (
                 ppg_data.groupby("Strain")["$/gram"].max()
                 .sort_values(ascending=True).index.tolist()
             )
             ppg_data["Strain"] = pd.Categorical(ppg_data["Strain"], categories=_strain_order, ordered=True)
-            ppg_data = ppg_data.sort_values(["Strain", "Type"])
+            ppg_data = ppg_data.sort_values(["Strain", "Product"])
             fig_ppg = px.bar(
                 ppg_data,
-                x="$/gram", y="Strain", color="Type",
+                x="$/gram", y="Strain", color="Product",
                 orientation="h", barmode="group",
                 color_discrete_map=_ppg_cmap,
                 text=ppg_data["$/gram"].apply(lambda v: f"${v:.2f}"),
@@ -416,7 +413,7 @@ with tab_brand:
             )
             fig_ppg.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#e3e3d8", showlegend=True, legend_title="Type",
+                font_color="#e3e3d8", showlegend=True, legend_title="Product",
                 height=max(350, ppg_data["Strain"].nunique() * 40),
                 margin=dict(l=0, r=60, t=10, b=10),
                 xaxis_title="$ per gram", yaxis_title="",
@@ -465,14 +462,14 @@ with tab_wholesale:
         wf1, wf2, wf3, wf4, wf5, wf6 = st.columns([2, 2, 2, 1, 1, 1])
         _w_facilities = ["All"] + sorted(ws_df["Facility"].unique().tolist())
         _w_vendors    = ["All"] + sorted(ws_df["Vendor"].dropna().unique().tolist())
-        _w_types      = ["All"] + sorted(ws_df["Type"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
+        _w_types      = ["All"] + sorted(ws_df["Product"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
         _w_dates      = ws_df["Transfer Date"].dropna()
         _w_min = _w_dates.min().date() if not _w_dates.empty else datetime.now().date()
         _w_max = _w_dates.max().date() if not _w_dates.empty else datetime.now().date()
 
         sel_w_facility = wf1.selectbox("Facility", _w_facilities, key="ws_facility")
         sel_w_vendor   = wf2.selectbox("Vendor",   _w_vendors,    key="ws_vendor")
-        sel_w_type     = wf3.selectbox("Type",     _w_types,      key="ws_type")
+        sel_w_type     = wf3.selectbox("Product",   _w_types,      key="ws_type")
         w_from = wf4.date_input("From", value=_w_min, min_value=_w_min, max_value=_w_max, key="ws_from")
         w_to   = wf5.date_input("To",   value=_w_max, min_value=_w_min, max_value=_w_max, key="ws_to")
 
@@ -482,7 +479,7 @@ with tab_wholesale:
         if sel_w_vendor != "All":
             wview = wview[wview["Vendor"] == sel_w_vendor]
         if sel_w_type != "All":
-            wview = wview[wview["Type"] == sel_w_type]
+            wview = wview[wview["Product"] == sel_w_type]
         wview = wview[wview["Transfer Date"].dt.date.between(w_from, w_to)]
 
         wview_g = wview[wview["Units UOM"] == "Grams"]
@@ -503,10 +500,9 @@ with tab_wholesale:
         # ── Strain summary table ───────────────────────────────────────────────
         st.subheader("Strain Summary")
         w_strain_tbl = (
-            wview_g.groupby(["Vendor", "Type", "Strain", "Product"])
+            wview_g.groupby(["Vendor", "Product", "Strain"])
             .agg(Grams=("Units", "sum"), Revenue=("Total", "sum"))
             .reset_index()
-            .rename(columns={"Product": "Grade"})
         )
         w_strain_tbl["$/gram"] = (
             w_strain_tbl["Revenue"] / w_strain_tbl["Grams"].replace(0, pd.NA)
@@ -529,32 +525,32 @@ with tab_wholesale:
         # ── $/gram by strain ───────────────────────────────────────────────────
         st.subheader("$/gram by Strain")
         w_ppg_data = (
-            wview_g.groupby(["Strain", "Type"])
+            wview_g.groupby(["Strain", "Product"])
             .apply(lambda g: g["Total"].sum() / g["Units"].sum() if g["Units"].sum() > 0 else 0)
             .reset_index(name="$/gram")
         )
         if not w_ppg_data.empty:
-            _w_types = sorted(w_ppg_data["Type"].unique().tolist())
-            _n_wt = max(len(_w_types), 1)
+            _w_prods = sorted(w_ppg_data["Product"].unique().tolist())
+            _n_wt = max(len(_w_prods), 1)
             _w_type_cmap = {
                 t: _shade_hex("#4CE89C", 0.5 + (i / max(_n_wt - 1, 1)) * 0.9)
-                for i, t in enumerate(_w_types)
+                for i, t in enumerate(_w_prods)
             }
             _w_strain_order = (
                 w_ppg_data.groupby("Strain")["$/gram"].max()
                 .sort_values(ascending=True).index.tolist()
             )
             w_ppg_data["Strain"] = pd.Categorical(w_ppg_data["Strain"], categories=_w_strain_order, ordered=True)
-            w_ppg_data = w_ppg_data.sort_values(["Strain", "Type"])
+            w_ppg_data = w_ppg_data.sort_values(["Strain", "Product"])
             fig_wppg = px.bar(
-                w_ppg_data, x="$/gram", y="Strain", color="Type",
+                w_ppg_data, x="$/gram", y="Strain", color="Product",
                 orientation="h", barmode="group",
                 color_discrete_map=_w_type_cmap,
                 text=w_ppg_data["$/gram"].apply(lambda v: f"${v:.2f}"),
             )
             fig_wppg.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#e3e3d8", legend_title="Type",
+                font_color="#e3e3d8", legend_title="Product",
                 height=max(300, w_ppg_data["Strain"].nunique() * 36),
                 margin=dict(l=0, r=60, t=10, b=10),
                 xaxis_title="$ per gram", yaxis_title="",
