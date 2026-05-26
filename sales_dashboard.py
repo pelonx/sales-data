@@ -1966,21 +1966,34 @@ with tab_orders:
         obs_view = obs_view[obs_view["Client"] == obs_store]
     obs_view = obs_view[obs_view["Submitted Date"].dt.date.between(obs_from, obs_to)]
 
-    obs_table = (
+    obs_totals = (
         obs_view.groupby(["Client", "License #", "Order #", "Submitted Date"])
         .agg(Revenue=("Line Total", "sum"), Units=("Units", "sum"))
         .reset_index()
-        .sort_values("Submitted Date", ascending=False)
     )
+    obs_pivot = obs_view.pivot_table(
+        index=["Client", "License #", "Order #", "Submitted Date"],
+        columns="Brand",
+        values="Line Total",
+        aggfunc="sum",
+        fill_value=0,
+    ).reset_index()
+    obs_pivot.columns.name = None
+    obs_table = obs_totals.merge(obs_pivot, on=["Client", "License #", "Order #", "Submitted Date"], how="left")
+    for brand in BRANDS:
+        if brand not in obs_table.columns:
+            obs_table[brand] = 0
+    obs_table = obs_table.sort_values("Submitted Date", ascending=False)
     obs_table["Submitted Date"] = obs_table["Submitted Date"].dt.strftime("%m/%d/%Y")
     obs_table = obs_table.rename(columns={"Client": "Store", "Submitted Date": "Date"})
 
     st.dataframe(
-        obs_table,
+        obs_table[["Store", "License #", "Order #", "Date", "Revenue", "Units"] + BRANDS],
         use_container_width=True,
         hide_index=True,
         column_config={
             "Revenue": st.column_config.NumberColumn("Revenue", format="$%.0f"),
+            **{brand: st.column_config.NumberColumn(brand, format="$%.0f") for brand in BRANDS},
         },
     )
     st.caption(f"{obs_table['Order #'].nunique()} orders · {fmt_usd(obs_table['Revenue'].sum())} total")
