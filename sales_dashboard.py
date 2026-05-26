@@ -166,12 +166,12 @@ def parse_input(text):
 
     # Check for exact duplicate rows before aggregation
     _seen_rows: set = set()
-    exact_dup_count = 0
+    exact_dup_ids: list = []
     deduped_records = []
     for rec in records:
         _key = tuple(rec.get(k) for k in ["License", "Store Name"] + months)
         if _key in _seen_rows:
-            exact_dup_count += 1
+            exact_dup_ids.append(f"{rec['License']} · {rec['Store Name']}")
         else:
             _seen_rows.add(_key)
             deduped_records.append(rec)
@@ -192,7 +192,7 @@ def parse_input(text):
                 agg[lic][m] = agg[lic].get(m, 0) + rec.get(m, 0)
 
     df = pd.DataFrame(list(agg.values())).set_index("License")
-    return df, months, stripped, exact_dup_count
+    return df, months, stripped, exact_dup_ids
 
 def google_sheet_csv_url(sheet_url, gid="0"):
     sheet_url = sheet_url.strip()
@@ -1161,7 +1161,7 @@ with st.sidebar:
 df, months, stripped = None, [], []
 if raw_input.strip():
     try:
-        df, months, stripped, rev_exact_dups = parse_input(raw_input)
+        df, months, stripped, rev_exact_dup_ids = parse_input(raw_input)
     except Exception as e:
         st.error(str(e))
 
@@ -1172,19 +1172,22 @@ if df is None:
 if stripped:
     st.warning(f"Auto-removed column{'s' if len(stripped)>1 else ''}: {', '.join(f'"{s}"' for s in stripped)}")
 
-if rev_exact_dups:
+if rev_exact_dup_ids:
     st.warning(
-        f"⚠️ Revenue data: {rev_exact_dups} exact duplicate row{'s' if rev_exact_dups!=1 else ''} removed before processing."
+        f"⚠️ Revenue data: {len(rev_exact_dup_ids)} exact duplicate row{'s' if len(rev_exact_dup_ids)!=1 else ''} removed — "
+        f"{'; '.join(rev_exact_dup_ids)}"
     )
 
 _order_df_check = st.session_state.get("order_df")
 if _order_df_check is not None:
-    _ord_dups = _order_df_check.duplicated().sum()
-    if _ord_dups > 0:
+    _ord_dup_mask = _order_df_check.duplicated()
+    if _ord_dup_mask.any():
+        _ord_dup_rows = _order_df_check[_ord_dup_mask]
+        _id_cols = [c for c in ["Order #", "License #", "Client", "Submitted Date"] if c in _ord_dup_rows.columns]
+        _ord_dup_labels = _ord_dup_rows[_id_cols].astype(str).agg(" · ".join, axis=1).tolist()
         st.warning(
-            f"⚠️ Order data: {_ord_dups} fully duplicate row{'s' if _ord_dups!=1 else ''} detected "
-            f"(identical across all columns). This may inflate totals. "
-            f"Review your source data."
+            f"⚠️ Order data: {len(_ord_dup_labels)} fully duplicate row{'s' if len(_ord_dup_labels)!=1 else ''} detected "
+            f"(identical across all columns) — {'; '.join(_ord_dup_labels)}"
         )
 
 top_lics, grand = compute_pareto(df, months, threshold)
