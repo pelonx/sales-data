@@ -1478,14 +1478,16 @@ with tab_contact:
     contact_month = find_last_month_col(months)
     today_date = datetime.now().date()
 
-    st.caption(f"Top 30 stores by **{contact_month}** revenue · Ranked highest to lowest")
+    cf_view = st.radio("Show", ["Top 30 Stores", "All Stores"], horizontal=True, key="cf_view_mode")
 
-    top30_lics = (
-        df[contact_month]
-        .sort_values(ascending=False)
-        .head(30)
-        .index.tolist()
-    )
+    all_lics_sorted = df[contact_month].sort_values(ascending=False).index.tolist()
+    top30_lics = all_lics_sorted[:30]
+    cf_pool = top30_lics if cf_view == "Top 30 Stores" else all_lics_sorted
+
+    if cf_view == "Top 30 Stores":
+        st.caption(f"Top 30 stores by **{contact_month}** revenue · Ranked highest to lowest")
+    else:
+        st.caption(f"All {len(all_lics_sorted)} stores by **{contact_month}** revenue · Ranked highest to lowest")
 
     AMOUNT_OPTIONS = [
         "", "$500–$1,000", "$1,000–$2,500", "$2,500–$5,000",
@@ -1517,7 +1519,7 @@ with tab_contact:
     )
     _q = contact_search.lower()
     display_lics = [
-        lic for lic in top30_lics
+        lic for lic in cf_pool
         if not _q
         or _q in df.loc[lic, "Store Name"].lower()
         or _q in lic.lower()
