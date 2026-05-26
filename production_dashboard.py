@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import requests
+import sqlite3
+import os
 from datetime import datetime
 from io import StringIO
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 st.set_page_config(page_title="Production Sales", layout="wide")
 
@@ -13,13 +14,14 @@ st.set_page_config(page_title="Production Sales", layout="wide")
 BRAND_VENDORS   = {"Minglewood Brands", "SALISH SEA INDUSTRIES L.L.C."}
 EXCLUDE_VENDORS = {"CONFIDENCE ANALYTICS"}
 
-BRAND_LABEL = {
-    "Minglewood Brands":            "Minglewood",
-    "SALISH SEA INDUSTRIES L.L.C.": "Salish Sea",
-}
+BRANDS_PROD = ["K. Savage", "Mayfield", "Leisure Land", "Clout King"]
+
 BRAND_COLORS = {
-    "Minglewood": "#E8844C",
-    "Salish Sea": "#4C9BE8",
+    "K. Savage":   "#4CE89C",
+    "Mayfield":    "#E8844C",
+    "Leisure Land":"#4C9BE8",
+    "Clout King":  "#E84C9B",
+    "Unassigned":  "#888888",
 }
 FACILITY_COLORS = {
     "Block 13": "#4CE89C",
@@ -34,10 +36,42 @@ def fmt_g(v):
     if v is None or (isinstance(v, float) and pd.isna(v)): return "0 g"
     return f"{v:,.0f} g"
 
+# ── SQLite persistence ────────────────────────────────────────────────────────
+def _db_path() -> str:
+    d = os.path.expanduser("~/.streamlit_prod")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "assignments.db")
+
+def _init_db():
+    con = sqlite3.connect(_db_path())
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS strain_brands "
+        "(strain TEXT PRIMARY KEY, brand TEXT NOT NULL)"
+    )
+    con.commit()
+    con.close()
+
+def load_strain_map() -> dict:
+    _init_db()
+    con = sqlite3.connect(_db_path())
+    rows = con.execute("SELECT strain, brand FROM strain_brands").fetchall()
+    con.close()
+    return {r[0]: r[1] for r in rows}
+
+def save_strain_map(mapping: dict):
+    _init_db()
+    con = sqlite3.connect(_db_path())
+    con.execute("DELETE FROM strain_brands")
+    con.executemany(
+        "INSERT INTO strain_brands (strain, brand) VALUES (?, ?)",
+        mapping.items(),
+    )
+    con.commit()
+    con.close()
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 def _csv_url(url: str, gid: str) -> str:
     url = url.strip()
-    # Already a publish-to-web CSV URL
     if "output=csv" in url or "format=csv" in url:
         return url
     parsed = urlparse(url)
@@ -80,23 +114,19 @@ def _clean_numeric(series: pd.Series) -> pd.Series:
 def parse_tab(raw: pd.DataFrame, facility: str) -> pd.DataFrame:
     df = raw.copy()
     df.columns = [c.strip() for c in df.columns]
-
     if "Transfer Date" in df.columns:
         df["Transfer Date"] = pd.to_datetime(df["Transfer Date"], errors="coerce")
-
     for col in ["Units", "Price", "Total", "Cost"]:
         if col in df.columns:
             df[col] = _clean_numeric(df[col])
-
     for col in ["Vendor", "Strain", "Product", "Units UOM", "Type", "Category"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
-
     df["Facility"] = facility
     df["Month"] = df["Transfer Date"].dt.to_period("M").astype(str)
     return df
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Sidebar — Data Source ─────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Data Source")
     st.caption(
@@ -109,14 +139,14 @@ with st.sidebar:
         key="prod_url",
     )
     col_a, col_b = st.columns(2)
-    gid_b13 = col_a.text_input("Block 13 GID", value="0",  key="prod_gid_b13")
-    gid_b9  = col_b.text_input("B-9 GID",      value="",   key="prod_gid_b9")
+    gid_b13 = col_a.text_input("Block 13 GID", value="0", key="prod_gid_b13")
+    gid_b9  = col_b.text_input("B-9 GID",      value="",  key="prod_gid_b9")
 
     if st.button("Load / Refresh", type="primary", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-# ── Load ──────────────────────────────────────────────────────────────────────
+# ── Load data ─────────────────────────────────────────────────────────────────
 if not sheet_url:
     st.info("Paste the Google Sheet URL in the sidebar to get started.")
     st.stop()
@@ -141,6 +171,57 @@ if not dfs:
 all_df = pd.concat(dfs, ignore_index=True)
 all_df = all_df[~all_df["Vendor"].isin(EXCLUDE_VENDORS)]
 
+# ── Sidebar — Brand Assignments ───────────────────────────────────────────────
+# Only show strains that appear in brand-partner rows
+_brand_strains = sorted(
+    all_df[all_df["Vendor"].isin(BRAND_VENDORS)]["Strain"]
+    .dropna()
+    .unique()
+    .tolist()
+)
+
+strain_map = load_strain_map()
+
+with st.sidebar:
+    st.divider()
+    st.header("Brand Assignments")
+    st.caption("Assign strains to brands. Unassigned strains appear under 'Unassigned'.")
+
+    if not _brand_strains:
+        st.info("Load data first to see available strains.")
+    else:
+        _new_assignments: dict[str, str] = {}
+        for brand in BRANDS_PROD:
+            current = [s for s, b in strain_map.items() if b == brand and s in _brand_strains]
+            selected = st.multiselect(
+                brand,
+                options=_brand_strains,
+                default=current,
+                key=f"assign_{brand}",
+            )
+            for s in selected:
+                _new_assignments[s] = brand
+
+        # Conflict detection
+        _strain_counts: dict[str, list] = {}
+        for s, b in _new_assignments.items():
+            _strain_counts.setdefault(s, []).append(b)
+        _conflicts = {s: bs for s, bs in _strain_counts.items() if len(bs) > 1}
+        if _conflicts:
+            conflict_lines = "; ".join(
+                f"{s} → {', '.join(bs)}" for s, bs in _conflicts.items()
+            )
+            st.warning(f"Conflict: strain assigned to multiple brands — {conflict_lines}")
+
+        if st.button("Save Assignments", use_container_width=True, disabled=bool(_conflicts)):
+            save_strain_map(_new_assignments)
+            strain_map = _new_assignments
+            st.success("Saved.")
+
+# Apply brand assignments to brand-partner rows
+brand_df = all_df[all_df["Vendor"].isin(BRAND_VENDORS)].copy()
+brand_df["Brand"] = brand_df["Strain"].map(strain_map).fillna("Unassigned")
+
 # ── Header ────────────────────────────────────────────────────────────────────
 facilities_loaded = all_df["Facility"].unique().tolist()
 st.markdown(
@@ -156,9 +237,6 @@ tab_brand, tab_wholesale = st.tabs(["🏷️ Brand Sales", "🏪 Wholesale"])
 # ║  TAB — Brand Sales                                               ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_brand:
-    brand_df = all_df[all_df["Vendor"].isin(BRAND_VENDORS)].copy()
-    brand_df["Brand"] = brand_df["Vendor"].map(BRAND_LABEL)
-
     if brand_df.empty:
         st.info("No Brand Sales records found in the loaded data.")
     else:
@@ -185,16 +263,16 @@ with tab_brand:
         bview_g = bview[bview["Units UOM"] == "Grams"]
 
         # ── KPIs ──────────────────────────────────────────────────────────────
-        b_rev   = bview["Total"].sum()
-        b_grams = bview_g["Units"].sum()
-        b_ppg   = (bview_g["Total"].sum() / b_grams) if b_grams > 0 else 0
+        b_rev    = bview["Total"].sum()
+        b_grams  = bview_g["Units"].sum()
+        b_ppg    = (bview_g["Total"].sum() / b_grams) if b_grams > 0 else 0
         b_strains = bview["Strain"].nunique()
 
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Total Revenue",  fmt_usd(b_rev))
-        k2.metric("Total Volume",   fmt_g(b_grams))
-        k3.metric("Avg $/gram",     f"${b_ppg:.2f}")
-        k4.metric("Strains",        b_strains)
+        k1.metric("Total Revenue", fmt_usd(b_rev))
+        k2.metric("Total Volume",  fmt_g(b_grams))
+        k3.metric("Avg $/gram",    f"${b_ppg:.2f}")
+        k4.metric("Strains",       b_strains)
 
         st.divider()
 
