@@ -36,6 +36,19 @@ def fmt_g(v):
     if v is None or (isinstance(v, float) and pd.isna(v)): return "0 g"
     return f"{v:,.0f} g"
 
+def _shade_hex(hex_color: str, factor: float) -> str:
+    """factor < 1 darkens toward black; factor > 1 lightens toward white."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    if factor > 1:
+        t = min(factor - 1, 1)
+        r = int(r + (255 - r) * t)
+        g = int(g + (255 - g) * t)
+        b = int(b + (255 - b) * t)
+    else:
+        r, g, b = int(r * factor), int(g * factor), int(b * factor)
+    return f"#{min(r,255):02x}{min(g,255):02x}{min(b,255):02x}"
+
 # ── SQLite persistence ────────────────────────────────────────────────────────
 def _db_path() -> str:
     d = os.path.expanduser("~/.streamlit_prod")
@@ -65,6 +78,33 @@ def save_strain_map(mapping: dict):
     con.executemany(
         "INSERT INTO strain_brands (strain, brand) VALUES (?, ?)",
         mapping.items(),
+    )
+    con.commit()
+    con.close()
+
+def _init_settings_db():
+    con = sqlite3.connect(_db_path())
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS settings "
+        "(key TEXT PRIMARY KEY, value TEXT)"
+    )
+    con.commit()
+    con.close()
+
+def load_settings() -> dict:
+    _init_settings_db()
+    con = sqlite3.connect(_db_path())
+    rows = con.execute("SELECT key, value FROM settings").fetchall()
+    con.close()
+    return {r[0]: r[1] for r in rows}
+
+def save_setting(key: str, value: str):
+    _init_settings_db()
+    con = sqlite3.connect(_db_path())
+    con.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
     )
     con.commit()
     con.close()
@@ -127,6 +167,8 @@ def parse_tab(raw: pd.DataFrame, facility: str) -> pd.DataFrame:
     return df
 
 # ── Sidebar — Data Source ─────────────────────────────────────────────────────
+_saved = load_settings()
+
 with st.sidebar:
     st.header("Data Source")
     st.caption(
@@ -135,14 +177,19 @@ with st.sidebar:
     )
     sheet_url = st.text_input(
         "Google Sheet URL",
+        value=_saved.get("sheet_url", ""),
         placeholder="https://docs.google.com/spreadsheets/d/…",
         key="prod_url",
     )
     col_a, col_b = st.columns(2)
-    gid_b13 = col_a.text_input("Block 13 GID", value="0", key="prod_gid_b13")
-    gid_b9  = col_b.text_input("B-9 GID",      value="",  key="prod_gid_b9")
+    gid_b13 = col_a.text_input("Block 13 GID", value=_saved.get("gid_b13", "0"), key="prod_gid_b13")
+    gid_b9  = col_b.text_input("B-9 GID",      value=_saved.get("gid_b9",  ""),  key="prod_gid_b9")
 
     if st.button("Load / Refresh", type="primary", use_container_width=True):
+        if sheet_url.strip():
+            save_setting("sheet_url", sheet_url.strip())
+            save_setting("gid_b13",   gid_b13.strip())
+            save_setting("gid_b9",    gid_b9.strip())
         st.cache_data.clear()
         st.rerun()
 
@@ -335,28 +382,45 @@ with tab_brand:
 
         # ── $/gram by strain ───────────────────────────────────────────────────
         st.subheader("$/gram by Strain")
-        ppg_chart = (
-            bview_g.groupby(["Strain", "Brand"])
+        ppg_data = (
+            bview_g.groupby(["Strain", "Brand", "Type"])
             .apply(lambda g: g["Total"].sum() / g["Units"].sum() if g["Units"].sum() > 0 else 0)
             .reset_index(name="$/gram")
-            .sort_values("$/gram", ascending=True)
         )
-        if not ppg_chart.empty:
+        if not ppg_data.empty:
+            _ppg_types = sorted(ppg_data["Type"].unique().tolist())
+            _n_t = max(len(_ppg_types), 1)
+            # Gradient shades per (brand, type): darker for first type, lighter for last
+            _ppg_cmap = {
+                f"{brand}|{t}": _shade_hex(base, 0.55 + (i / max(_n_t - 1, 1)) * 0.85)
+                for brand, base in BRAND_COLORS.items()
+                for i, t in enumerate(_ppg_types)
+            }
+            ppg_data["_ck"] = ppg_data["Brand"] + "|" + ppg_data["Type"]
+            ppg_data = ppg_data.sort_values("$/gram", ascending=True)
             fig_ppg = px.bar(
-                ppg_chart,
-                x="$/gram", y="Strain", color="Brand",
-                orientation="h",
-                color_discrete_map=BRAND_COLORS,
-                text=ppg_chart["$/gram"].apply(lambda v: f"${v:.2f}"),
+                ppg_data,
+                x="$/gram", y="Strain", color="_ck",
+                orientation="h", barmode="group",
+                color_discrete_map=_ppg_cmap,
+                text=ppg_data["$/gram"].apply(lambda v: f"${v:.2f}"),
+                custom_data=["Brand", "Type"],
+            )
+            for trace in fig_ppg.data:
+                if "|" in trace.name:
+                    b_part, t_part = trace.name.split("|", 1)
+                    trace.name = f"{t_part} ({b_part})"
+            fig_ppg.update_traces(
+                hovertemplate="%{customdata[0]} · %{customdata[1]}<br>$/gram: %{x:.2f}<extra></extra>",
+                textposition="outside", cliponaxis=False,
             )
             fig_ppg.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#e3e3d8", showlegend=True, legend_title="Brand",
-                height=max(350, len(ppg_chart) * 24),
+                font_color="#e3e3d8", showlegend=True, legend_title="Type",
+                height=max(350, ppg_data["Strain"].nunique() * 36),
                 margin=dict(l=0, r=60, t=10, b=10),
                 xaxis_title="$ per gram", yaxis_title="",
             )
-            fig_ppg.update_traces(textposition="outside", cliponaxis=False)
             st.plotly_chart(fig_ppg, use_container_width=True)
 
         st.divider()
@@ -464,22 +528,29 @@ with tab_wholesale:
 
         # ── $/gram by strain ───────────────────────────────────────────────────
         st.subheader("$/gram by Strain")
-        w_ppg_chart = (
-            wview_g.groupby("Strain")
+        w_ppg_data = (
+            wview_g.groupby(["Strain", "Type"])
             .apply(lambda g: g["Total"].sum() / g["Units"].sum() if g["Units"].sum() > 0 else 0)
             .reset_index(name="$/gram")
-            .sort_values("$/gram", ascending=True)
         )
-        if not w_ppg_chart.empty:
+        if not w_ppg_data.empty:
+            _w_types = sorted(w_ppg_data["Type"].unique().tolist())
+            _n_wt = max(len(_w_types), 1)
+            _w_type_cmap = {
+                t: _shade_hex("#4CE89C", 0.55 + (i / max(_n_wt - 1, 1)) * 0.85)
+                for i, t in enumerate(_w_types)
+            }
+            w_ppg_data = w_ppg_data.sort_values("$/gram", ascending=True)
             fig_wppg = px.bar(
-                w_ppg_chart, x="$/gram", y="Strain", orientation="h",
-                text=w_ppg_chart["$/gram"].apply(lambda v: f"${v:.2f}"),
-                color_discrete_sequence=["#4CE89C"],
+                w_ppg_data, x="$/gram", y="Strain", color="Type",
+                orientation="h", barmode="group",
+                color_discrete_map=_w_type_cmap,
+                text=w_ppg_data["$/gram"].apply(lambda v: f"${v:.2f}"),
             )
             fig_wppg.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#e3e3d8",
-                height=max(300, len(w_ppg_chart) * 24),
+                font_color="#e3e3d8", legend_title="Type",
+                height=max(300, w_ppg_data["Strain"].nunique() * 36),
                 margin=dict(l=0, r=60, t=10, b=10),
                 xaxis_title="$ per gram", yaxis_title="",
             )
