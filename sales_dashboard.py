@@ -1875,6 +1875,7 @@ with tab_orders:
             Total_Units=("Units", "sum"),
             Total_Revenue=("Line Total", "sum"),
             Orders=("Order #", "nunique"),
+            Last_Order=("Submitted Date", "max"),
         )
         .reset_index()
     )
@@ -1883,7 +1884,6 @@ with tab_orders:
         if brand not in store_table.columns:
             store_table[brand] = 0
     store_table = store_table.sort_values("Total_Revenue", ascending=False)
-    store_table["Total_Revenue"] = store_table["Total_Revenue"].apply(fmt_usd)
 
     # Search
     store_search = st.text_input("Search stores", placeholder="Store name or license…", key="ord_store_search")
@@ -1897,8 +1897,17 @@ with tab_orders:
     disp_store = store_table.rename(columns={
         "Client": "Store", "License #": "License",
         "Total_Units": "Total Units", "Total_Revenue": "Revenue",
-    })[["Store", "License", "Orders", "Revenue", "Total Units"] + BRANDS]
-    st.dataframe(disp_store, use_container_width=True, hide_index=True)
+        "Last_Order": "Last Order",
+    })[["Store", "License", "Orders", "Last Order", "Revenue", "Total Units"] + BRANDS]
+    st.dataframe(
+        disp_store,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Revenue": st.column_config.NumberColumn("Revenue", format="$%.0f"),
+            "Last Order": st.column_config.DatetimeColumn("Last Order", format="MM/DD/YYYY"),
+        },
+    )
 
     st.divider()
 
