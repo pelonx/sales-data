@@ -2064,7 +2064,7 @@ with tab_mom:
             lambda r: (r["$ Change"] / r["Last Month"] * 100) if r["Last Month"] != 0 else None,
             axis=1,
         )
-        mom = mom.sort_values("$ Change", ascending=False)
+        mom = mom.sort_values("Last Month", ascending=False)
 
         # ── Summary KPIs ──────────────────────────────────────────────────────
         total_base   = mom["Last Month"].sum()
