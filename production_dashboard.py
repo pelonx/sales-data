@@ -110,6 +110,19 @@ def save_setting(key: str, value: str):
     con.close()
 
 # ── Data loading ──────────────────────────────────────────────────────────────
+def load_assignments_from_sheet(url: str, gid: str) -> dict:
+    """Load strain→brand mapping from a two-column sheet tab (Strain, Brand)."""
+    try:
+        raw = load_tab(url, gid)
+        raw.columns = [c.strip() for c in raw.columns]
+        if "Strain" not in raw.columns or "Brand" not in raw.columns:
+            return {}
+        raw = raw[["Strain", "Brand"]].dropna()
+        return dict(zip(raw["Strain"].astype(str).str.strip(),
+                        raw["Brand"].astype(str).str.strip()))
+    except Exception:
+        return {}
+
 def _csv_url(url: str, gid: str) -> str:
     url = url.strip()
     if "output=csv" in url or "format=csv" in url:
@@ -182,14 +195,18 @@ with st.sidebar:
         key="prod_url",
     )
     col_a, col_b = st.columns(2)
-    gid_b13 = col_a.text_input("Block 13 GID", value=_saved.get("gid_b13", "0"), key="prod_gid_b13")
-    gid_b9  = col_b.text_input("B-9 GID",      value=_saved.get("gid_b9",  ""),  key="prod_gid_b9")
+    gid_b13      = col_a.text_input("Block 13 GID",    value=_saved.get("gid_b13",      "0"), key="prod_gid_b13")
+    gid_b9       = col_b.text_input("B-9 GID",         value=_saved.get("gid_b9",       ""),  key="prod_gid_b9")
+    gid_assign   = st.text_input(   "Assignments GID",  value=_saved.get("gid_assign",   ""),
+                                    placeholder="GID of a tab with Strain and Brand columns",
+                                    key="prod_gid_assign")
 
     if st.button("Load / Refresh", type="primary", use_container_width=True):
         if sheet_url.strip():
-            save_setting("sheet_url", sheet_url.strip())
-            save_setting("gid_b13",   gid_b13.strip())
-            save_setting("gid_b9",    gid_b9.strip())
+            save_setting("sheet_url",  sheet_url.strip())
+            save_setting("gid_b13",    gid_b13.strip())
+            save_setting("gid_b9",     gid_b9.strip())
+            save_setting("gid_assign", gid_assign.strip())
         st.cache_data.clear()
         st.rerun()
 
@@ -229,10 +246,19 @@ _brand_strains = sorted(
 
 strain_map = load_strain_map()
 
+# If an assignments sheet tab is configured, it takes priority over SQLite
+if gid_assign.strip() and sheet_url.strip():
+    _sheet_map = load_assignments_from_sheet(sheet_url.strip(), gid_assign.strip())
+    if _sheet_map:
+        strain_map = _sheet_map
+
 with st.sidebar:
     st.divider()
     st.header("Brand Assignments")
-    st.caption("Assign strains to brands. Unassigned strains appear under 'Unassigned'.")
+    if gid_assign.strip():
+        st.caption("Assignments loaded from sheet. Edit the Assignments tab in Google Sheets, then click Load / Refresh.")
+    else:
+        st.caption("Assign strains to brands below, or upload a file. Add an Assignments GID above to load from the sheet automatically.")
 
     # ── Import / Export ───────────────────────────────────────────────
     if strain_map:
