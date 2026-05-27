@@ -14,13 +14,15 @@ st.set_page_config(page_title="Production Sales", layout="wide")
 BRAND_VENDORS   = {"Minglewood Brands", "SALISH SEA INDUSTRIES L.L.C."}
 EXCLUDE_VENDORS = {"CONFIDENCE ANALYTICS"}
 
-BRANDS_PROD = ["K. Savage", "Mayfield", "Leisure Land", "Clout King"]
+BRANDS_PROD       = ["K. Savage", "Mayfield", "Leisure Land", "Clout King", "Wholesale"]
+BRANDS_NAMED      = ["K. Savage", "Mayfield", "Leisure Land", "Clout King"]  # shown in Brand Sales tab
 
 BRAND_COLORS = {
     "K. Savage":   "#4CE89C",
     "Mayfield":    "#E8844C",
     "Leisure Land":"#4C9BE8",
     "Clout King":  "#E84C9B",
+    "Wholesale":   "#A0A0C8",
     "Unassigned":  "#888888",
 }
 FACILITY_COLORS = {
@@ -370,6 +372,10 @@ brand_df = display_df[
 ].copy()
 brand_df["Brand"] = brand_df["Strain"].map(strain_map)
 
+# Split brand_df into named brands vs wholesale
+named_df = brand_df[brand_df["Brand"].isin(BRANDS_NAMED)]
+ws_df    = brand_df[brand_df["Brand"] == "Wholesale"]
+
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab_brand, tab_wholesale = st.tabs(["🏷️ Brand Sales", "🏪 Wholesale"])
 
@@ -377,14 +383,14 @@ tab_brand, tab_wholesale = st.tabs(["🏷️ Brand Sales", "🏪 Wholesale"])
 # ║  TAB — Brand Sales                                               ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_brand:
-    if brand_df.empty:
-        st.info("No Brand Sales records found in the loaded data.")
+    if named_df.empty:
+        st.info("No Brand Sales records found. Assign strains to a named brand in the sidebar.")
     else:
         # ── Filters ───────────────────────────────────────────────────────────
         bf1, bf2, bf3, bf4 = st.columns([2, 2, 1, 1])
-        _b_brands = ["All"] + sorted(brand_df["Brand"].dropna().unique().tolist())
-        _b_types  = ["All"] + sorted(brand_df["Product"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
-        _b_dates  = brand_df["Transfer Date"].dropna()
+        _b_brands = ["All"] + sorted(named_df["Brand"].dropna().unique().tolist())
+        _b_types  = ["All"] + sorted(named_df["Product"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
+        _b_dates  = named_df["Transfer Date"].dropna()
         _b_min = _b_dates.min().date() if not _b_dates.empty else datetime.now().date()
         _b_max = _b_dates.max().date() if not _b_dates.empty else datetime.now().date()
 
@@ -393,7 +399,7 @@ with tab_brand:
         b_from = bf3.date_input("From", value=_b_min, min_value=_b_min, max_value=_b_max, key="bs_from")
         b_to   = bf4.date_input("To",   value=_b_max, min_value=_b_min, max_value=_b_max, key="bs_to")
 
-        bview = brand_df.copy()
+        bview = named_df.copy()
         if sel_b_brand != "All":
             bview = bview[bview["Brand"] == sel_b_brand]
         if sel_b_type != "All":
@@ -597,13 +603,8 @@ with tab_brand:
 # ║  TAB — Wholesale                                                 ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_wholesale:
-    ws_df = display_df[
-        ~display_df["Strain"].isin(_assigned_strains) &
-        ~display_df["Vendor"].isin(EXCLUDE_VENDORS)
-    ].copy()
-
     if ws_df.empty:
-        st.info("No Wholesale records found in the loaded data.")
+        st.info("No Wholesale records found. Assign strains to 'Wholesale' in the sidebar Brand Assignments.")
     else:
         # ── Filters ───────────────────────────────────────────────────────────
         wf1, wf2, wf3, wf4 = st.columns([2, 2, 1, 1])
