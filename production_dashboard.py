@@ -28,6 +28,16 @@ FACILITY_COLORS = {
     "B-9":      "#9B6BE8",
 }
 
+# Canonical product names — aliases are collapsed to the canonical form
+PRODUCT_ALIASES = {
+    "Flower Lot - A's": "A Grade",
+    "A Grade":          "A Grade",
+    "Flower Lot - B's": "B Grade",
+    "B Grade":          "B Grade",
+    "Trim":             "Trim",
+    "Trim Material":    "Trim",
+}
+
 def fmt_usd(v):
     if v is None or (isinstance(v, float) and pd.isna(v)): return "$0"
     return f"${v:,.0f}"
@@ -234,6 +244,7 @@ if not dfs:
 
 all_df = pd.concat(dfs, ignore_index=True)
 all_df = all_df[~all_df["Vendor"].isin(EXCLUDE_VENDORS)]
+all_df["Product"] = all_df["Product"].map(PRODUCT_ALIASES).fillna(all_df["Product"])
 
 # ── Sidebar — Brand Assignments ───────────────────────────────────────────────
 # All strains except explicitly excluded vendors
@@ -447,11 +458,18 @@ with tab_brand:
         with st.expander("🔍 Raw data lookup (troubleshoot missing rows)"):
             _diag_q = st.text_input("Search strain name", key="diag_strain_search")
             if _diag_q:
-                _diag = display_df[
-                    display_df["Strain"].str.contains(_diag_q, case=False, na=False)
-                ][["Facility", "Vendor", "Strain", "Product", "Units UOM", "Units", "Total", "Transfer Date"]]
-                st.caption(f"{len(_diag)} rows found in raw data for '{_diag_q}'")
-                st.dataframe(_diag, use_container_width=True, hide_index=True)
+                _cols = ["Facility", "Vendor", "Strain", "Product", "Units UOM", "Units", "Total", "Transfer Date"]
+                _diag_raw = display_df[display_df["Strain"].str.contains(_diag_q, case=False, na=False)][_cols]
+                _diag_brand = brand_df[brand_df["Strain"].str.contains(_diag_q, case=False, na=False)][_cols + ["Brand"]]
+                st.caption(f"**Raw data** (before assignment filter): {len(_diag_raw)} rows")
+                st.dataframe(_diag_raw, use_container_width=True, hide_index=True)
+                st.caption(f"**After brand filter** (brand_df): {len(_diag_brand)} rows  |  In strain map: {_diag_q in str(list(strain_map.keys()))}")
+                if not _diag_brand.empty:
+                    st.dataframe(_diag_brand, use_container_width=True, hide_index=True)
+                else:
+                    # Show closest strain_map keys to help spot whitespace/casing issues
+                    _close = [k for k in strain_map if _diag_q.lower() in k.lower()]
+                    st.warning(f"Not in brand_df. strain_map keys containing '{_diag_q}': {_close or 'none'}")
 
         st.divider()
 
