@@ -408,13 +408,15 @@ with tab_brand:
         # ── Strain summary table ───────────────────────────────────────────────
         st.subheader("Strain by Brand")
         strain_tbl = (
-            bview_g.groupby(["Brand", "Product", "Strain"])
-            .agg(Grams=("Units", "sum"), Revenue=("Total", "sum"))
+            bview.groupby(["Brand", "Product", "Strain", "Units UOM"])
+            .agg(Units=("Units", "sum"), Revenue=("Total", "sum"))
             .reset_index()
         )
-        strain_tbl["$/gram"] = (
-            strain_tbl["Revenue"] / strain_tbl["Grams"].replace(0, pd.NA)
-        ).round(2)
+        strain_tbl["$/gram"] = strain_tbl.apply(
+            lambda r: round(r["Revenue"] / r["Units"], 2)
+            if r["Units UOM"] == "Grams" and r["Units"] > 0 else pd.NA,
+            axis=1,
+        )
         strain_tbl = strain_tbl.sort_values(["Brand", "Revenue"], ascending=[True, False])
 
         st.dataframe(
@@ -422,9 +424,9 @@ with tab_brand:
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Revenue": st.column_config.NumberColumn("Revenue", format="$%.0f"),
-                "Grams":   st.column_config.NumberColumn("Grams",   format="%.0f g"),
-                "$/gram":  st.column_config.NumberColumn("$/gram",  format="$%.2f"),
+                "Revenue":  st.column_config.NumberColumn("Revenue",  format="$%.0f"),
+                "Units":    st.column_config.NumberColumn("Units",    format="%.0f"),
+                "$/gram":   st.column_config.NumberColumn("$/gram",   format="$%.2f"),
             },
         )
 
@@ -592,14 +594,16 @@ with tab_wholesale:
         # ── Strain summary table ───────────────────────────────────────────────
         st.subheader("Strain Summary")
         w_strain_tbl = (
-            wview_g.groupby(["Vendor", "Product", "Strain"])
-            .agg(Grams=("Units", "sum"), Revenue=("Total", "sum"))
+            wview.groupby(["Vendor", "Product", "Strain", "Units UOM"])
+            .agg(Units=("Units", "sum"), Revenue=("Total", "sum"))
             .reset_index()
         )
-        w_strain_tbl["$/gram"] = (
-            w_strain_tbl["Revenue"] / w_strain_tbl["Grams"].replace(0, pd.NA)
-        ).round(2)
-        w_strain_tbl = w_strain_tbl.sort_values("$/gram", ascending=False)
+        w_strain_tbl["$/gram"] = w_strain_tbl.apply(
+            lambda r: round(r["Revenue"] / r["Units"], 2)
+            if r["Units UOM"] == "Grams" and r["Units"] > 0 else pd.NA,
+            axis=1,
+        )
+        w_strain_tbl = w_strain_tbl.sort_values("Revenue", ascending=False)
 
         st.dataframe(
             w_strain_tbl,
@@ -607,7 +611,7 @@ with tab_wholesale:
             hide_index=True,
             column_config={
                 "Revenue": st.column_config.NumberColumn("Revenue", format="$%.0f"),
-                "Grams":   st.column_config.NumberColumn("Grams",   format="%.0f g"),
+                "Units":   st.column_config.NumberColumn("Units",   format="%.0f"),
                 "$/gram":  st.column_config.NumberColumn("$/gram",  format="$%.2f"),
             },
         )
