@@ -458,18 +458,25 @@ with tab_brand:
         with st.expander("🔍 Raw data lookup (troubleshoot missing rows)"):
             _diag_q = st.text_input("Search strain name", key="diag_strain_search")
             if _diag_q:
-                _cols = ["Facility", "Vendor", "Strain", "Product", "Units UOM", "Units", "Total", "Transfer Date"]
-                _diag_raw = display_df[display_df["Strain"].str.contains(_diag_q, case=False, na=False)][_cols]
-                _diag_brand = brand_df[brand_df["Strain"].str.contains(_diag_q, case=False, na=False)][_cols + ["Brand"]]
-                st.caption(f"**Raw data** (before assignment filter): {len(_diag_raw)} rows")
-                st.dataframe(_diag_raw, use_container_width=True, hide_index=True)
-                st.caption(f"**After brand filter** (brand_df): {len(_diag_brand)} rows  |  In strain map: {_diag_q in str(list(strain_map.keys()))}")
-                if not _diag_brand.empty:
-                    st.dataframe(_diag_brand, use_container_width=True, hide_index=True)
+                _dcols = ["Facility", "Vendor", "Strain", "Product", "Units UOM", "Units", "Total", "Transfer Date"]
+                _m = lambda df: df["Strain"].str.contains(_diag_q, case=False, na=False)
+                _d1 = display_df[_m(display_df)]
+                _d2 = brand_df[_m(brand_df)]
+                _d3 = bview[_m(bview)]
+                _d4 = _tview[_m(_tview)]
+                st.markdown(
+                    f"| Stage | Rows |\n|---|---|\n"
+                    f"| Raw (display_df) | {len(_d1)} |\n"
+                    f"| After assignment filter (brand_df) | {len(_d2)} |\n"
+                    f"| After tab filters (bview) | {len(_d3)} |\n"
+                    f"| After table filters (_tview) | {len(_d4)} |"
+                )
+                st.caption(f"Active tab filters — Brand: `{sel_b_brand}` · Product: `{sel_b_type}` · Table brand: `{_tbl_brand}` · Table product: `{_tbl_product}` · Table strain: `{_tbl_strain}`")
+                if not _d2.empty:
+                    st.dataframe(_d2[_dcols + ["Brand"]], use_container_width=True, hide_index=True)
                 else:
-                    # Show closest strain_map keys to help spot whitespace/casing issues
                     _close = [k for k in strain_map if _diag_q.lower() in k.lower()]
-                    st.warning(f"Not in brand_df. strain_map keys containing '{_diag_q}': {_close or 'none'}")
+                    st.warning(f"strain_map keys matching '{_diag_q}': {_close or 'none — not assigned'}")
 
         st.divider()
 
