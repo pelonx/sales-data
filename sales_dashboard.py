@@ -2010,22 +2010,25 @@ with tab_orders:
     )
 
     st.markdown("#### Lapsed Stores")
-    _lapsed_days = st.number_input(
-        "Inactive for at least N days", min_value=1, max_value=730,
-        value=30, step=1, key="lapsed_days",
-        help="Show all stores whose last active month ended more than N days ago."
+    _lapsed_window = st.number_input(
+        "Lapsed within the last N days", min_value=31, max_value=1095,
+        value=180, step=1, key="lapsed_days",
+        help="Show stores whose last active month ended between 30 and N days ago."
     )
-    _lapse_cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=int(_lapsed_days))
+    _today = pd.Timestamp.now().normalize()
+    _window_start = _today - pd.Timedelta(days=int(_lapsed_window))
+    _lapse_cutoff = _today - pd.Timedelta(days=30)
     lapsed_df = _lapsed_totals[
         _lapsed_totals["Last_Active"].notna()
+        & (_lapsed_totals["Last_Active"] >= _window_start)
         & (_lapsed_totals["Last_Active"] < _lapse_cutoff)
     ].copy().sort_values("Last_Active", ascending=True)
 
     if lapsed_df.empty:
-        st.info(f"No stores inactive for more than {_lapsed_days} days.")
+        st.info(f"No stores lapsed within the last {_lapsed_window} days.")
     else:
         st.caption(
-            f"{len(lapsed_df)} store{'s' if len(lapsed_df) != 1 else ''} — last active month ended more than {_lapsed_days} days ago, sorted oldest first"
+            f"{len(lapsed_df)} store{'s' if len(lapsed_df) != 1 else ''} — last active month between 30 and {_lapsed_window} days ago, sorted oldest first"
         )
         st.dataframe(
             lapsed_df.rename(columns={"Last_Active": "Last Active Month", "Revenue": "All-time Revenue"}),
