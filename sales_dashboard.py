@@ -2000,6 +2000,8 @@ with tab_orders:
         & (_lapsed_totals["Last_Order"] < _lapse_cutoff)
     ].copy().sort_values("Last_Order", ascending=True)
 
+    st.write(f"DEBUG — today: {_today.date()} | window_start: {_window_start.date()} | lapse_cutoff: {_lapse_cutoff.date()} | stores in _lapsed_totals: {len(_lapsed_totals)} | earliest last order: {_lapsed_totals['Last_Order'].min()} | latest last order: {_lapsed_totals['Last_Order'].max()} | lapsed_df rows: {len(lapsed_df)}")
+
     if lapsed_df.empty:
         st.info(f"No lapsed stores found in the last {_lapsed_window} days.")
     else:
