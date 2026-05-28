@@ -2028,7 +2028,8 @@ with tab_contact:
         store_name = df.loc[lic, "Store Name"]
         revenue = cf_display_by_lic.get(lic, fmt_usd(df.loc[lic, contact_month]))
         has_saved = lic in _saved_map
-        label = f"{'✅ ' if has_saved else ''}#{rank}  {store_name}  ·  {lic}  ·  {revenue}"
+        status_marker = "" if has_saved else " 🔴"
+        label = f"{'✅ ' if has_saved else ''}#{rank}  {store_name}{status_marker}  ·  {lic}  ·  {revenue}"
         with st.expander(label):
             _date_default = today_date
             _date_str = _saved(lic, "Date Contacted")
