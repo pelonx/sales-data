@@ -172,6 +172,13 @@ def normalize_month_headers(headers):
         normalized[idx] = f"{MONTH_ABBR[month_num]} {year}"
     return normalized
 
+def canonical_month_label(label):
+    parsed = parse_month_header(label)
+    if not parsed:
+        return str(label or "").strip()
+    month_num, year = parsed
+    return f"{MONTH_ABBR[month_num]} {year}"
+
 def is_totals_col(header, values, other_cols):
     header_text = str(header).strip()
     if TOTAL_PATTERN.match(header_text):
@@ -572,7 +579,7 @@ def upsert_contact_log_rows(rows: list[dict]):
                 contact_method    = excluded.contact_method,
                 saved_at          = excluded.saved_at
         """, [
-            (r["license"], r["store_name"], r["contact_month"], r.get("revenue"),
+            (r["license"], r["store_name"], canonical_month_label(r["contact_month"]), r.get("revenue"),
              r.get("date_contacted"), r.get("commitment_made"), r.get("committed_cadence"),
              r.get("committed_amount"), r.get("notes"), r.get("initials"),
              r.get("person_contacted"), r.get("contact_method"), now)
@@ -1599,7 +1606,9 @@ with tab_contact:
     _saved_log = load_contact_log()
     _saved_map: dict = {}
     if not _saved_log.empty:
-        for _, _r in _saved_log[_saved_log["Month"] == contact_month].iterrows():
+        _contact_month_key = canonical_month_label(contact_month)
+        _saved_month_keys = _saved_log["Month"].apply(canonical_month_label)
+        for _, _r in _saved_log[_saved_month_keys == _contact_month_key].iterrows():
             _saved_map[_r["License"]] = _r.to_dict()
 
     def _saved(lic, field, default=""):
