@@ -2028,8 +2028,7 @@ with tab_contact:
         store_name = df.loc[lic, "Store Name"]
         revenue = cf_display_by_lic.get(lic, fmt_usd(df.loc[lic, contact_month]))
         has_saved = lic in _saved_map
-        status_marker = "" if has_saved else " 🔴"
-        label = f"{'✅ ' if has_saved else ''}#{rank}  {store_name}{status_marker}  ·  {lic}  ·  {revenue}"
+        label = f"{'✅ ' if has_saved else ''}#{rank}  {store_name}  ·  {lic}  ·  {revenue}"
         with st.expander(label):
             _date_default = today_date
             _date_str = _saved(lic, "Date Contacted")
@@ -3078,8 +3077,21 @@ with tab_mom:
         movers   = pd.concat([top_up, top_down]).sort_values("$ Change", ascending=True)
 
         if not movers.empty:
+            try:
+                _mom_contact_log = load_contact_log()
+                _mom_contact_status = contact_status_by_license(_mom_contact_log)
+            except Exception:
+                _mom_contact_status = {}
+
             movers_chart = movers.copy()
             movers_chart["License"] = movers_chart["License"].astype(str)
+            movers_chart["Contact Status"] = movers_chart["License"].apply(
+                lambda lic: _mom_contact_status.get(str(lic), "Not Contacted")
+            )
+            movers_chart["Store Label"] = movers_chart.apply(
+                lambda r: f"{r['Store Name']} 🔴" if r["Contact Status"] == "Not Contacted" else r["Store Name"],
+                axis=1,
+            )
             movers_chart = movers_chart.merge(
                 _curr_brand_rev[["License"] + _mom_brand_cols],
                 on="License",
@@ -3134,7 +3146,7 @@ with tab_mom:
                     ])
                 fig_mom.add_trace(go.Bar(
                     x=_segment_values,
-                    y=movers_chart["Store Name"],
+                    y=movers_chart["Store Label"],
                     name=_brand,
                     orientation="h",
                     marker_color=_mom_brand_colors.get(_brand, "#B7BCC6"),
@@ -3157,7 +3169,7 @@ with tab_mom:
 
             fig_mom.add_trace(go.Scatter(
                 x=movers_chart["$ Change"],
-                y=movers_chart["Store Name"],
+                y=movers_chart["Store Label"],
                 mode="text",
                 name=f"Change and {prev_month}",
                 text=movers_chart["Mover Label"],
@@ -3194,7 +3206,7 @@ with tab_mom:
                 yaxis=dict(
                     title="",
                     categoryorder="array",
-                    categoryarray=movers_chart["Store Name"].tolist(),
+                    categoryarray=movers_chart["Store Label"].tolist(),
                 ),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, title=None),
                 hoverlabel=dict(bgcolor="#1C2028", font_color="#F7F8FA"),
