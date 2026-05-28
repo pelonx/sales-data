@@ -75,6 +75,25 @@ MONTH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SHEET_ID_PATTERN = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")
+MONTH_NUMS = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+MONTH_ABBR = {
+    1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr",
+    5: "May", 6: "Jun", 7: "Jul", 8: "Aug",
+    9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec",
+}
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -97,6 +116,61 @@ def parse_amount(value, strict=True):
         if strict:
             raise ValueError(f"Could not parse numeric sales value: {value!r}")
         return 0.0
+
+def normalize_year(year_text):
+    year = int(year_text)
+    if year < 100:
+        return 2000 + year if year < 70 else 1900 + year
+    return year
+
+def parse_month_header(header):
+    text = re.sub(r"\s+", " ", str(header).strip())
+    text = re.sub(r"(\d{2,4})\.\d+$", r"\1", text)
+    month_words = "|".join(MONTH_NUMS)
+    patterns = [
+        rf"^({month_words})[\s._/-]+(\d{{2,4}})$",
+        rf"^(\d{{2,4}})[\s._/-]+({month_words})$",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        first, second = match.groups()
+        if first.lower() in MONTH_NUMS:
+            return MONTH_NUMS[first.lower()], normalize_year(second)
+        return MONTH_NUMS[second.lower()], normalize_year(first)
+    return None
+
+def normalize_month_headers(headers):
+    normalized = [str(h).strip() for h in headers]
+    parsed = []
+    for i, header in enumerate(normalized):
+        parsed_header = parse_month_header(header)
+        if parsed_header:
+            month_num, year = parsed_header
+            parsed.append((i, month_num, year))
+
+    if not parsed:
+        return normalized
+
+    month_seq = [month_num for _, month_num, _ in parsed]
+    years = {year for _, _, year in parsed}
+    block_count = len(parsed) // 12
+    if (
+        block_count > 1
+        and len(parsed) % 12 == 0
+        and month_seq == list(range(1, 13)) * block_count
+        and len(years) == 1
+    ):
+        end_year = next(iter(years))
+        start_year = end_year - block_count + 1
+        for order, (idx, month_num, _) in enumerate(parsed):
+            normalized[idx] = f"{MONTH_ABBR[month_num]} {start_year + (order // 12)}"
+        return normalized
+
+    for idx, month_num, year in parsed:
+        normalized[idx] = f"{MONTH_ABBR[month_num]} {year}"
+    return normalized
 
 def is_totals_col(header, values, other_cols):
     header_text = str(header).strip()
@@ -125,7 +199,7 @@ def parse_input(text):
     if len(headers) < 3:
         raise ValueError("Expected at least 3 columns: License, Store Name, and month columns.")
 
-    raw_month_headers = headers[2:]
+    raw_month_headers = normalize_month_headers(headers[2:])
     data_rows = rows[1:]
 
     col_arrays = []
