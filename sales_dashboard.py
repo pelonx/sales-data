@@ -3089,7 +3089,11 @@ with tab_mom:
                 lambda lic: _mom_contact_status.get(str(lic), "Not Contacted")
             )
             movers_chart["Store Label"] = movers_chart.apply(
-                lambda r: f"{r['Store Name']} 🔴" if r["Contact Status"] == "Not Contacted" else r["Store Name"],
+                lambda r: (
+                    f"{r['Store Name']} 🔴"
+                    if r["Contact Status"] == "Not Contacted" and r["$ Change"] < 0
+                    else r["Store Name"]
+                ),
                 axis=1,
             )
             movers_chart = movers_chart.merge(
