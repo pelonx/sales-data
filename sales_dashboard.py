@@ -2953,6 +2953,7 @@ with tab_mom:
             "Mayfield": "#E8844C",
             "Leisure Land": "#4C9BE8",
             "Other": "#B7BCC6",
+            "No Current Orders": "#7A7F86",
         }
         _mom_brand_cols = ["K. Savage", "Mayfield", "Leisure Land"]
         _mom_extra_brands = sorted(
@@ -3090,32 +3091,48 @@ with tab_mom:
                 lambda v: f"Δ {'+' if v >= 0 else ''}{fmt_usd(v)}"
             )
             movers_chart["Last Month Label"] = movers_chart["Last Month"].apply(
-                lambda v: f"{prev_month}: {fmt_usd(v)}"
+                lambda v: f"Last {fmt_usd(v)}"
             )
-            _current_max = movers_chart["Current Month"].max()
-            _last_max = movers_chart["Last Month"].max()
-            _x_max = max(_current_max, _last_max, 1) * 1.35
+            movers_chart["Mover Label"] = movers_chart.apply(
+                lambda r: f"{r['Change Label']} · {r['Last Month Label']}",
+                axis=1,
+            )
+            _plot_brand_cols = list(_mom_brand_cols)
+            if (movers_chart["Current Month"] <= 0).any():
+                movers_chart["No Current Orders"] = 0
+                _plot_brand_cols.append("No Current Orders")
+            _max_abs_change = max(movers_chart["$ Change"].abs().max(), 1)
+            _x_limit = _max_abs_change * 1.55
 
             fig_mom = go.Figure()
-            for _brand in _mom_brand_cols:
-                _brand_values = movers_chart[_brand]
+            for _brand in _plot_brand_cols:
+                _segment_values = []
                 _share_text = []
                 _customdata = []
                 for _, _row in movers_chart.iterrows():
-                    _brand_value = float(_row[_brand])
+                    _change = float(_row["$ Change"])
                     _current_total = float(_row["Current Month"])
-                    _share = (_brand_value / _current_total * 100) if _current_total else 0
-                    _share_text.append(f"{_share:.0f}%" if _share >= 12 else "")
+                    if _brand == "No Current Orders":
+                        _brand_value = 0
+                        _share = 100 if _current_total <= 0 else 0
+                        _segment = _change if _current_total <= 0 else 0
+                    else:
+                        _brand_value = float(_row[_brand])
+                        _share = (_brand_value / _current_total * 100) if _current_total else 0
+                        _segment = _change * (_brand_value / _current_total) if _current_total else 0
+                    _segment_values.append(_segment)
+                    _share_text.append(f"{_share:.0f}%" if abs(_segment) >= _max_abs_change * 0.08 and _share >= 12 else "")
                     _customdata.append([
                         _row["License"],
                         _row["Current Month"],
                         _row["Last Month"],
-                        _row["$ Change"],
+                        _change,
                         _share,
                         _row["Change Label"],
+                        _brand_value,
                     ])
                 fig_mom.add_trace(go.Bar(
-                    x=_brand_values,
+                    x=_segment_values,
                     y=movers_chart["Store Name"],
                     name=_brand,
                     orientation="h",
@@ -3128,8 +3145,9 @@ with tab_mom:
                     hovertemplate=(
                         "<b>%{y}</b><br>"
                         "License: %{customdata[0]}<br>"
-                        f"{_brand}: " + "%{x:$,.0f}<br>"
+                        f"{_brand} current revenue: " + "%{customdata[6]:$,.0f}<br>"
                         "Brand share: %{customdata[4]:.1f}%<br>"
+                        "Change segment: %{x:$,.0f}<br>"
                         "Current: %{customdata[1]:$,.0f}<br>"
                         f"{prev_month}: " + "%{customdata[2]:$,.0f}<br>"
                         "Change: %{customdata[5]}<extra></extra>"
@@ -3137,42 +3155,46 @@ with tab_mom:
                 ))
 
             fig_mom.add_trace(go.Scatter(
-                x=movers_chart["Last Month"],
-                y=movers_chart["Store Name"],
-                mode="markers+text",
-                name=f"{prev_month} amount",
-                marker=dict(symbol="diamond", size=9, color="#F7F8FA", line=dict(color="#111", width=1)),
-                text=movers_chart["Last Month Label"],
-                textposition="middle right",
-                textfont=dict(color="#F7F8FA", size=11),
-                hovertemplate=f"<b>%{{y}}</b><br>{prev_month}: %{{x:$,.0f}}<extra></extra>",
-            ))
-            fig_mom.add_trace(go.Scatter(
-                x=movers_chart["Current Month"],
+                x=movers_chart["$ Change"],
                 y=movers_chart["Store Name"],
                 mode="text",
-                name="$ change",
-                text=movers_chart["Change Label"],
-                textposition="middle left",
+                name=f"Change and {prev_month}",
+                text=movers_chart["Mover Label"],
+                textposition=[
+                    "middle right" if v >= 0 else "middle left"
+                    for v in movers_chart["$ Change"]
+                ],
                 textfont=dict(color="#F7F8FA", size=11),
-                hoverinfo="skip",
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Change: %{x:$,.0f}<br>"
+                    f"{prev_month}: " + "%{customdata:$,.0f}<extra></extra>"
+                ),
+                customdata=movers_chart["Last Month"],
                 showlegend=False,
             ))
             fig_mom.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
                 font_color="#e3e3d8",
-                barmode="stack",
+                barmode="relative",
                 height=max(340, len(movers_chart) * 34),
-                margin=dict(l=0, r=110, t=10, b=10),
+                margin=dict(l=0, r=150, t=10, b=10),
                 xaxis=dict(
-                    title="Current month revenue by brand; diamond marks last month",
+                    title="$ change, segmented by current-month brand share",
                     tickprefix="$",
                     tickformat=",",
                     gridcolor="rgba(255,255,255,0.14)",
-                    range=[0, _x_max],
+                    zeroline=True,
+                    zerolinecolor="rgba(255,255,255,0.75)",
+                    zerolinewidth=2,
+                    range=[-_x_limit, _x_limit],
                 ),
-                yaxis_title="",
+                yaxis=dict(
+                    title="",
+                    categoryorder="array",
+                    categoryarray=movers_chart["Store Name"].tolist(),
+                ),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, title=None),
                 hoverlabel=dict(bgcolor="#1C2028", font_color="#F7F8FA"),
             )
