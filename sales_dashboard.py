@@ -1966,8 +1966,6 @@ with tab_orders:
         [(m, ts) for m, ts in _month_ts_map.items() if ts is not None],
         key=lambda x: x[1],
     )
-    with st.expander("DEBUG — month column parsing"):
-        st.write({m: str(ts) for m, ts in _month_ts_map.items()})
     _lapsed_rows = []
     for _lic in df.index:
         _last_ts = None
