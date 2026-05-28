@@ -1950,7 +1950,6 @@ with tab_orders:
     store_table = store_table.sort_values("Last_Order", ascending=False)
 
     # Lapsed stores — use full unfiltered dataset so date picker doesn't hide them
-    _lapsed_cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=30)
     _all_paid_df = ord_df[ord_df["Line Total"] > 0]
     _lapsed_totals = (
         _all_paid_df.groupby(["Client", "License #"])
@@ -1992,12 +1991,21 @@ with tab_orders:
     )
 
     st.markdown("#### Lapsed Stores")
-    st.write(f"DEBUG — cutoff: {_lapsed_cutoff.date()}, lapsed rows: {len(lapsed_df)}, total ord_df rows: {len(ord_df)}, max Submitted Date: {ord_df['Submitted Date'].max()}")
+    _lapsed_days = st.number_input(
+        "No purchase in the last N days", min_value=1, max_value=365,
+        value=30, step=1, key="lapsed_days"
+    )
+    _lapsed_cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=int(_lapsed_days))
+    lapsed_df = _lapsed_totals[
+        _lapsed_totals["Last_Order"].notna()
+        & (_lapsed_totals["Last_Order"] < _lapsed_cutoff)
+    ].copy().sort_values("Last_Order", ascending=True)
+
     if lapsed_df.empty:
-        st.info("No lapsed stores — all stores have placed an order within the last 30 days.")
+        st.info(f"No lapsed stores — all stores have placed an order within the last {_lapsed_days} days.")
     else:
         st.caption(
-            f"{len(lapsed_df)} store{'s' if len(lapsed_df) != 1 else ''} with no purchase in the last 30 days — sorted by longest lapsed first"
+            f"{len(lapsed_df)} store{'s' if len(lapsed_df) != 1 else ''} with no purchase in the last {_lapsed_days} days — sorted by longest lapsed first"
         )
         disp_lapsed = lapsed_df.rename(columns={
             "Client": "Store", "License #": "License",
