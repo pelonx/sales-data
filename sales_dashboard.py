@@ -222,12 +222,48 @@ def google_sheet_csv_url(sheet_url, gid="0"):
         raise ValueError("Could not find the spreadsheet ID in that Google Sheets URL.")
 
     sheet_id = match.group(1)
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={url_gid}"
+    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    return base if url_gid in ("0", "", None) else f"{base}&gid={url_gid}"
+
+_SHEET_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+}
+
+def _fetch_sheet_csv(csv_url: str) -> str:
+    """Fetch a Google Sheets CSV URL. Falls back to /pub format if /export returns 4xx."""
+    import requests as _req
+    resp = _req.get(csv_url, headers=_SHEET_HEADERS, allow_redirects=True, timeout=15)
+    if resp.status_code == 200:
+        return resp.text
+    # Auto-convert export URL → pub URL and retry
+    if "/export?" in csv_url:
+        qs_part = csv_url.split("/export?", 1)[1]
+        gid_val = None
+        for part in qs_part.split("&"):
+            if part.startswith("gid="):
+                gid_val = part[4:]
+        base_pub = csv_url.split("/export?")[0] + "/pub?single=true&output=csv"
+        pub_url = base_pub if not gid_val or gid_val == "0" else f"{base_pub}&gid={gid_val}"
+        resp2 = _req.get(pub_url, headers=_SHEET_HEADERS, allow_redirects=True, timeout=15)
+        if resp2.status_code == 200:
+            return resp2.text
+    raise ValueError(
+        f"Google returned HTTP {resp.status_code}. "
+        f"Make sure the sheet is shared as 'Anyone with the link can view', or use a "
+        f"Publish-to-web CSV URL: File → Share → Publish to web → choose sheet → CSV → Publish. "
+        f"(URL tried: {csv_url})"
+    )
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_google_sheet_as_tsv(sheet_url, gid="0"):
+    from io import StringIO as _StringIO
     csv_url = google_sheet_csv_url(sheet_url, gid)
-    sheet_df = pd.read_csv(csv_url).dropna(how="all").dropna(axis=1, how="all")
+    text = _fetch_sheet_csv(csv_url)
+    sheet_df = pd.read_csv(_StringIO(text)).dropna(how="all").dropna(axis=1, how="all")
     if sheet_df.empty:
         raise ValueError("The selected sheet is empty.")
     if len(sheet_df.columns) < 3:
@@ -323,25 +359,10 @@ def parse_orders(file_obj) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_order_sheet_as_df(sheet_url, gid="0"):
-    import requests as _req
-    csv_url = google_sheet_csv_url(sheet_url, gid)
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
-    }
-    resp = _req.get(csv_url, headers=headers, allow_redirects=True, timeout=15)
-    if resp.status_code != 200:
-        raise ValueError(
-            f"Google returned HTTP {resp.status_code}. "
-            f"Try using a Publish-to-web CSV URL instead: in Google Sheets go to "
-            f"File → Share → Publish to web → choose the sheet → CSV → Publish, "
-            f"then paste that URL here. (URL tried: {csv_url})"
-        )
     from io import StringIO as _StringIO
-    raw = pd.read_csv(_StringIO(resp.text)).dropna(how="all").dropna(axis=1, how="all")
+    csv_url = google_sheet_csv_url(sheet_url, gid)
+    text = _fetch_sheet_csv(csv_url)
+    raw = pd.read_csv(_StringIO(text)).dropna(how="all").dropna(axis=1, how="all")
     if raw.empty:
         raise ValueError("The order sheet is empty.")
     return raw, raw.shape
@@ -1170,7 +1191,8 @@ if df is None:
     st.stop()
 
 if stripped:
-    st.warning(f"Auto-removed column{'s' if len(stripped)>1 else ''}: {', '.join(f'"{s}"' for s in stripped)}")
+    _stripped_names = ", ".join('"' + s + '"' for s in stripped)
+    st.warning(f"Auto-removed column{'s' if len(stripped)>1 else ''}: {_stripped_names}")
 
 if rev_exact_dup_ids:
     st.warning(
@@ -1927,6 +1949,23 @@ with tab_orders:
             store_table[brand] = 0
     store_table = store_table.sort_values("Last_Order", ascending=False)
 
+    # Lapsed stores — use full unfiltered dataset so date picker doesn't hide them
+    _lapsed_cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=30)
+    _all_paid_df = ord_df[ord_df["Line Total"] > 0]
+    _lapsed_totals = (
+        _all_paid_df.groupby(["Client", "License #"])
+        .agg(
+            Total_Revenue=("Line Total", "sum"),
+            Orders=("Order #", "nunique"),
+            Last_Order=("Submitted Date", "max"),
+        )
+        .reset_index()
+    )
+    lapsed_df = _lapsed_totals[
+        _lapsed_totals["Last_Order"].notna()
+        & (_lapsed_totals["Last_Order"] < _lapsed_cutoff)
+    ].copy().sort_values("Last_Order", ascending=True)
+
     # Search
     store_search = st.text_input("Search stores", placeholder="Store name or license…", key="ord_store_search")
     if store_search:
@@ -1951,6 +1990,28 @@ with tab_orders:
             **{brand: st.column_config.NumberColumn(brand, format="$%.0f") for brand in BRANDS},
         },
     )
+
+    st.markdown("#### Lapsed Stores")
+    st.write(f"DEBUG — cutoff: {_lapsed_cutoff.date()}, lapsed rows: {len(lapsed_df)}, total ord_df rows: {len(ord_df)}, max Submitted Date: {ord_df['Submitted Date'].max()}")
+    if lapsed_df.empty:
+        st.info("No lapsed stores — all stores have placed an order within the last 30 days.")
+    else:
+        st.caption(
+            f"{len(lapsed_df)} store{'s' if len(lapsed_df) != 1 else ''} with no purchase in the last 30 days — sorted by longest lapsed first"
+        )
+        disp_lapsed = lapsed_df.rename(columns={
+            "Client": "Store", "License #": "License",
+            "Total_Revenue": "Revenue", "Last_Order": "Last Order",
+        })[["Store", "License", "Orders", "Last Order", "Revenue"]]
+        st.dataframe(
+            disp_lapsed,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Revenue": st.column_config.NumberColumn("All-time Revenue", format="$%.0f"),
+                "Last Order": st.column_config.DatetimeColumn("Last Order", format="MM/DD/YYYY"),
+            },
+        )
 
     st.divider()
 
