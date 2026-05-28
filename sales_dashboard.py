@@ -2467,6 +2467,10 @@ with tab_orders:
         lm3.metric("Avg Days Inactive", f"{lapsed_df['Days_Inactive'].mean():.0f}")
         lm4.metric("Top Risk Store", str(_top_risk_store)[:28], fmt_usd(_top_risk_value))
 
+        _dark_chart_bg = "#0E1117"
+        _dark_chart_grid = "rgba(255,255,255,0.16)"
+        _dark_chart_text = "#F7F8FA"
+
         st.markdown("##### Lapse Aging")
         _bucket_summary = (
             lapsed_df.groupby("Aging_Bucket", observed=False)
@@ -2487,6 +2491,7 @@ with tab_orders:
             marker_color=BLUE,
             text=[f"{int(v):,}" for v in _bucket_summary["Stores"]],
             textposition="outside",
+            textfont=dict(color=_dark_chart_text),
         ))
         fig_lapsed_age.add_trace(go.Scatter(
             x=_bucket_summary["Aging Bucket"],
@@ -2498,13 +2503,17 @@ with tab_orders:
             marker=dict(size=8),
             text=[fmt_usd(v) if v else "" for v in _bucket_summary["Est_Monthly_Risk"]],
             textposition="top center",
+            textfont=dict(color=_dark_chart_text),
         ))
         fig_lapsed_age.update_layout(
             height=320,
             margin=dict(t=10, b=10),
-            plot_bgcolor="white",
+            plot_bgcolor=_dark_chart_bg,
+            paper_bgcolor=_dark_chart_bg,
+            font=dict(color=_dark_chart_text),
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            yaxis=dict(title="Stores", gridcolor="#eee", rangemode="tozero"),
+            xaxis=dict(gridcolor=_dark_chart_grid),
+            yaxis=dict(title="Stores", gridcolor=_dark_chart_grid, rangemode="tozero"),
             yaxis2=dict(
                 title="Est. monthly risk",
                 overlaying="y",
@@ -2514,6 +2523,7 @@ with tab_orders:
                 showgrid=False,
                 rangemode="tozero",
             ),
+            hoverlabel=dict(bgcolor="#1C2028", font_color=_dark_chart_text),
         )
         st.plotly_chart(fig_lapsed_age, use_container_width=True)
 
@@ -2564,12 +2574,19 @@ with tab_orders:
         fig_lapsed_pareto.update_layout(
             height=max(320, len(_pareto_df) * 34),
             margin=dict(t=10, b=10, l=10, r=10),
-            plot_bgcolor="white",
-            xaxis=dict(title="Estimated monthly revenue at risk", tickprefix="$", tickformat=",", gridcolor="#eee"),
+            plot_bgcolor=_dark_chart_bg,
+            paper_bgcolor=_dark_chart_bg,
+            font=dict(color=_dark_chart_text),
+            xaxis=dict(title="Estimated monthly revenue at risk", tickprefix="$", tickformat=",", gridcolor=_dark_chart_grid),
             yaxis=dict(title=None),
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            hoverlabel=dict(bgcolor="#1C2028", font_color=_dark_chart_text),
         )
-        fig_lapsed_pareto.update_traces(textposition="outside", cliponaxis=False)
+        fig_lapsed_pareto.update_traces(
+            textposition="outside",
+            textfont=dict(color=_dark_chart_text),
+            cliponaxis=False,
+        )
         st.plotly_chart(fig_lapsed_pareto, use_container_width=True)
 
         st.markdown("##### Outreach Priority")
@@ -2608,10 +2625,13 @@ with tab_orders:
         fig_lapsed_scatter.update_layout(
             height=420,
             margin=dict(t=10, b=10),
-            plot_bgcolor="white",
-            xaxis=dict(title="Days since last active month", gridcolor="#eee"),
-            yaxis=dict(title="Estimated monthly revenue at risk", tickprefix="$", tickformat=",", gridcolor="#eee"),
+            plot_bgcolor=_dark_chart_bg,
+            paper_bgcolor=_dark_chart_bg,
+            font=dict(color=_dark_chart_text),
+            xaxis=dict(title="Days since last active month", gridcolor=_dark_chart_grid),
+            yaxis=dict(title="Estimated monthly revenue at risk", tickprefix="$", tickformat=",", gridcolor=_dark_chart_grid),
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            hoverlabel=dict(bgcolor="#1C2028", font_color=_dark_chart_text),
         )
         st.plotly_chart(fig_lapsed_scatter, use_container_width=True)
 
