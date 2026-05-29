@@ -2808,9 +2808,11 @@ with tab_orders:
         },
     )
 
-    st.markdown("#### Released from Balaclava")
+    release_title_col, release_totals_col = st.columns([1.2, 3])
+    release_title_col.markdown("#### Released from Balaclava")
     manifest_col = first_existing_column(released_source, MANIFEST_REFERENCE_COLUMNS)
     if manifest_col is None:
+        release_totals_col.caption("No manifest reference column")
         st.info("No manifest reference column found in the order data.")
     else:
         released_view = released_source.copy()
@@ -2835,8 +2837,28 @@ with tab_orders:
         released_view = released_view[released_view["_Sales"] > 0].copy()
 
         if released_view.empty:
+            release_totals_col.caption("No manifested sales")
             st.info("No manifested sales in the current filters.")
         else:
+            brand_totals = released_view.groupby("Brand")["_Sales"].sum()
+            preferred_brand_order = BRANDS + ["Bulk", "Other"]
+            ordered_brands = [
+                brand for brand in preferred_brand_order
+                if brand in brand_totals.index and brand_totals[brand] > 0
+            ]
+            ordered_brands += [
+                brand for brand in sorted(brand_totals.index)
+                if brand not in ordered_brands and brand_totals[brand] > 0
+            ]
+            release_totals_col.markdown(
+                "<div style='padding-top:0.55rem;text-align:right'>"
+                + " &nbsp; ".join(
+                    f"<span><strong>{brand}</strong> {fmt_usd(brand_totals[brand])}</span>"
+                    for brand in ordered_brands
+                )
+                + "</div>",
+                unsafe_allow_html=True,
+            )
             manifest_date_col = first_existing_column(released_view, MANIFEST_DATE_COLUMNS)
             if manifest_date_col:
                 released_view["_Release Date"] = pd.to_datetime(
