@@ -21,7 +21,7 @@ from reportlab.platypus import (
     SimpleDocTemplate, Table, TableStyle, Paragraph,
     Spacer, HRFlowable, PageBreak, Image
 )
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Store Sales Dashboard", layout="wide")
 # ── Password guard (active when 'password' key exists in secrets) ──────────────
@@ -67,8 +67,17 @@ CONTACT_LOG_COLUMNS = [
     "License", "Store Name", "Month", "Revenue",
     "Date Contacted", "Commitment", "Cadence",
     "Committed Amount", "Notes", "Initials",
-    "Person Contacted", "Contact Method", "Saved At",
+    "Person Contacted", "Contact Method",
+    "Next Outreach", "Next Outreach Date",
+    "Alert Recipient", "Alert CC", "Alert Sent Week",
+    "Saved At",
 ]
+ALERT_RECIPIENTS = {
+    "DK": "danny@balaclavabrands.com",
+    "CH": "chris@balaclavabrands.com",
+}
+ALERT_CC = "geoff@ksavagesupply.com, roger@ksavagesupply.com"
+ALERT_OPTIONS = ["", "2 Weeks", "4 Weeks", "Other"]
 TOTAL_PATTERN = re.compile(
     r"^(total|totals|sum|grand\s*total|ytd|year\s*to\s*date|annual|avg|average|subtotal)s?$",
     re.IGNORECASE,
@@ -659,7 +668,11 @@ def init_storage():
                 UNIQUE(license, contact_month)
             )
         """)
-        for col in ("initials TEXT", "person_contacted TEXT", "contact_method TEXT"):
+        for col in (
+            "initials TEXT", "person_contacted TEXT", "contact_method TEXT",
+            "next_outreach TEXT", "next_outreach_date TEXT",
+            "alert_recipient TEXT", "alert_cc TEXT", "alert_sent_week TEXT",
+        ):
             try:
                 conn.execute(f"ALTER TABLE contact_log ADD COLUMN {col}")
             except Exception:
@@ -741,6 +754,11 @@ def _contact_row_from_save_dict(row, saved_at):
         "Initials": _clean_cell(row.get("initials")),
         "Person Contacted": _clean_cell(row.get("person_contacted")),
         "Contact Method": _clean_cell(row.get("contact_method")),
+        "Next Outreach": _clean_cell(row.get("next_outreach")),
+        "Next Outreach Date": _clean_cell(row.get("next_outreach_date")),
+        "Alert Recipient": _clean_cell(row.get("alert_recipient")),
+        "Alert CC": _clean_cell(row.get("alert_cc")),
+        "Alert Sent Week": _clean_cell(row.get("alert_sent_week")),
         "Saved At": saved_at,
     }
 
@@ -761,6 +779,11 @@ def _normalize_contact_df(df):
         "Initials": ["Initials", "initials"],
         "Person Contacted": ["Person Contacted", "person_contacted"],
         "Contact Method": ["Contact Method", "contact_method"],
+        "Next Outreach": ["Next Outreach", "Next Outreach Alert", "next_outreach"],
+        "Next Outreach Date": ["Next Outreach Date", "Next Outreach Alert Date", "next_outreach_date"],
+        "Alert Recipient": ["Alert Recipient", "Alert Email", "alert_recipient"],
+        "Alert CC": ["Alert CC", "alert_cc"],
+        "Alert Sent Week": ["Alert Sent Week", "alert_sent_week"],
         "Saved At": ["Saved At", "saved_at"],
     }
 
@@ -801,6 +824,11 @@ def _contact_df_to_save_rows(df):
             "initials": row["Initials"],
             "person_contacted": row["Person Contacted"],
             "contact_method": row["Contact Method"],
+            "next_outreach": row["Next Outreach"],
+            "next_outreach_date": row["Next Outreach Date"],
+            "alert_recipient": row["Alert Recipient"],
+            "alert_cc": row["Alert CC"],
+            "alert_sent_week": row["Alert Sent Week"],
         })
     return rows
 
@@ -816,6 +844,9 @@ def _meaningful_contact_rows(df):
         | normalized["Initials"].str.strip().ne("")
         | normalized["Person Contacted"].str.strip().ne("")
         | normalized["Contact Method"].str.strip().ne("")
+        | normalized["Next Outreach"].str.strip().ne("")
+        | normalized["Next Outreach Date"].str.strip().ne("")
+        | normalized["Alert Recipient"].str.strip().ne("")
     )
     return _contact_df_to_save_rows(normalized[meaningful])
 
@@ -840,7 +871,8 @@ def _contact_log_from_sqlite() -> pd.DataFrame:
             SELECT license, store_name, contact_month, revenue,
                    date_contacted, commitment_made, committed_cadence,
                    committed_amount, notes, initials, person_contacted,
-                   contact_method, saved_at
+                   contact_method, next_outreach, next_outreach_date,
+                   alert_recipient, alert_cc, alert_sent_week, saved_at
             FROM contact_log
             ORDER BY saved_at DESC
         """).fetchall()
@@ -857,8 +889,9 @@ def _upsert_contact_log_sqlite(rows: list[dict]):
                 (license, store_name, contact_month, revenue,
                  date_contacted, commitment_made, committed_cadence,
                  committed_amount, notes, initials, person_contacted,
-                 contact_method, saved_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 contact_method, next_outreach, next_outreach_date,
+                 alert_recipient, alert_cc, alert_sent_week, saved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(license, contact_month) DO UPDATE SET
                 store_name        = excluded.store_name,
                 revenue           = excluded.revenue,
@@ -870,12 +903,19 @@ def _upsert_contact_log_sqlite(rows: list[dict]):
                 initials          = excluded.initials,
                 person_contacted  = excluded.person_contacted,
                 contact_method    = excluded.contact_method,
+                next_outreach     = excluded.next_outreach,
+                next_outreach_date = excluded.next_outreach_date,
+                alert_recipient   = excluded.alert_recipient,
+                alert_cc          = excluded.alert_cc,
+                alert_sent_week   = excluded.alert_sent_week,
                 saved_at          = excluded.saved_at
         """, [
             (r["license"], r["store_name"], canonical_month_label(r["contact_month"]), r.get("revenue"),
              r.get("date_contacted"), r.get("commitment_made"), r.get("committed_cadence"),
              r.get("committed_amount"), r.get("notes"), r.get("initials"),
-             r.get("person_contacted"), r.get("contact_method"), now)
+             r.get("person_contacted"), r.get("contact_method"),
+             r.get("next_outreach"), r.get("next_outreach_date"),
+             r.get("alert_recipient"), r.get("alert_cc"), r.get("alert_sent_week"), now)
             for r in rows
         ])
 
@@ -951,7 +991,12 @@ def _contact_log_from_sheet() -> pd.DataFrame:
     values = worksheet.get_all_values()
     if not values or len(values) == 1:
         return pd.DataFrame(columns=CONTACT_LOG_COLUMNS)
-    return _normalize_contact_df(pd.DataFrame(values[1:], columns=values[0]))
+    headers = values[0]
+    rows = [
+        row[:len(headers)] + [""] * max(0, len(headers) - len(row))
+        for row in values[1:]
+    ]
+    return _normalize_contact_df(pd.DataFrame(rows, columns=headers))
 
 def _write_contact_log_sheet(df):
     worksheet = _contact_worksheet()
@@ -2083,6 +2128,26 @@ with tab_contact:
     def _sel_idx(options, value):
         return options.index(value) if value in options else 0
 
+    def _date_or_default(value, default):
+        if value is None or str(value).strip() in ("", "None", "nan"):
+            return default
+        if hasattr(value, "date") and not isinstance(value, datetime):
+            return value
+        try:
+            return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+        except Exception:
+            return default
+
+    def _alert_date_for(interval, base_date, custom_date=None):
+        base_date = _date_or_default(base_date, today_date)
+        if interval == "2 Weeks":
+            return base_date + timedelta(days=14)
+        if interval == "4 Weeks":
+            return base_date + timedelta(days=28)
+        if interval == "Other":
+            return _date_or_default(custom_date, base_date)
+        return None
+
     # Search filter
     contact_search = st.text_input(
         "Search stores", placeholder="Store name or license…", key="contact_search"
@@ -2112,9 +2177,9 @@ with tab_contact:
             r1a, r1b, r1c, r1d = st.columns(4)
             r1a.date_input("Date Contacted", value=_date_default,
                            format="MM/DD/YYYY", key=f"cf_{lic}_date")
-            r1b.selectbox("Initials", INITIALS_OPTIONS,
-                          index=_sel_idx(INITIALS_OPTIONS, _saved(lic, "Initials")),
-                          key=f"cf_{lic}_initials")
+            cur_initials = r1b.selectbox("Initials", INITIALS_OPTIONS,
+                                         index=_sel_idx(INITIALS_OPTIONS, _saved(lic, "Initials")),
+                                         key=f"cf_{lic}_initials")
             r1c.text_input("Person Contacted", value=_saved(lic, "Person Contacted"),
                            key=f"cf_{lic}_person")
             r1d.selectbox("Contact Method", METHOD_OPTIONS,
@@ -2132,6 +2197,47 @@ with tab_contact:
                           index=_sel_idx(AMOUNT_OPTIONS, _saved(lic, "Committed Amount")),
                           key=f"cf_{lic}_amount")
 
+            _saved_alert_interval = _saved(lic, "Next Outreach")
+            _saved_alert_date = _date_or_default(_saved(lic, "Next Outreach Date"), today_date + timedelta(days=14))
+            alert_cols = st.columns([1, 1, 2])
+            alert_interval = alert_cols[0].selectbox(
+                "Next Outreach Alert",
+                ALERT_OPTIONS,
+                index=_sel_idx(ALERT_OPTIONS, _saved_alert_interval),
+                key=f"cf_{lic}_alert_interval",
+            )
+            _contacted_for_alert = st.session_state.get(f"cf_{lic}_date", _date_default)
+            if alert_interval == "Other":
+                next_alert_date = alert_cols[1].date_input(
+                    "Next Outreach Date",
+                    value=_saved_alert_date,
+                    format="MM/DD/YYYY",
+                    key=f"cf_{lic}_alert_date",
+                )
+            else:
+                next_alert_date = _alert_date_for(alert_interval, _contacted_for_alert)
+                if next_alert_date:
+                    alert_cols[1].text_input(
+                        "Next Outreach Date",
+                        value=next_alert_date.strftime("%m/%d/%Y"),
+                        disabled=True,
+                        key=f"cf_{lic}_alert_date_display",
+                    )
+                else:
+                    alert_cols[1].text_input(
+                        "Next Outreach Date",
+                        value="",
+                        disabled=True,
+                        key=f"cf_{lic}_alert_date_display",
+                    )
+            alert_recipient = ALERT_RECIPIENTS.get(cur_initials, "")
+            if alert_interval and alert_recipient:
+                alert_cols[2].caption(f"Monday digest to {alert_recipient}; CC {ALERT_CC}")
+            elif alert_interval:
+                alert_cols[2].warning("Select DK or CH initials to route the alert.")
+            else:
+                alert_cols[2].caption("No follow-up alert scheduled.")
+
             st.text_area("Notes", value=_saved(lic, "Notes"),
                          height=120, key=f"cf_{lic}_notes")
 
@@ -2140,6 +2246,7 @@ with tab_contact:
 
     if save_col.button("💾 Save to Team Log", use_container_width=True, type="primary"):
         rows_to_save = []
+        alert_missing_recipients = []
         for lic in cf_pool:
             commitment = st.session_state.get(f"cf_{lic}_commitment", "No")
             cadence    = st.session_state.get(f"cf_{lic}_cadence", "")
@@ -2148,6 +2255,14 @@ with tab_contact:
             initials   = st.session_state.get(f"cf_{lic}_initials", "")
             person     = st.session_state.get(f"cf_{lic}_person", "")
             method     = st.session_state.get(f"cf_{lic}_method", "")
+            alert_interval = st.session_state.get(f"cf_{lic}_alert_interval", "")
+            contacted_date = st.session_state.get(f"cf_{lic}_date", today_date)
+            alert_custom_date = st.session_state.get(f"cf_{lic}_alert_date")
+            alert_date = _alert_date_for(alert_interval, contacted_date, alert_custom_date)
+            alert_recipient = ALERT_RECIPIENTS.get(initials, "") if alert_interval else ""
+            alert_cc = ALERT_CC if alert_recipient else ""
+            if alert_interval and not alert_recipient:
+                alert_missing_recipients.append(df.loc[lic, "Store Name"])
             has_entry  = (
                 commitment == "Yes"
                 or bool(str(cadence or "").strip())
@@ -2156,6 +2271,7 @@ with tab_contact:
                 or bool(str(initials or "").strip())
                 or bool(str(person or "").strip())
                 or bool(str(method or "").strip())
+                or bool(str(alert_interval or "").strip())
             )
             if has_entry:
                 rows_to_save.append({
@@ -2171,6 +2287,11 @@ with tab_contact:
                     "committed_cadence": cadence,
                     "committed_amount":  amount,
                     "notes":             notes,
+                    "next_outreach":     alert_interval,
+                    "next_outreach_date": alert_date.isoformat() if alert_date else "",
+                    "alert_recipient":   alert_recipient,
+                    "alert_cc":          alert_cc,
+                    "alert_sent_week":   _saved(lic, "Alert Sent Week"),
                 })
         if rows_to_save:
             try:
@@ -2179,12 +2300,24 @@ with tab_contact:
                 st.error(f"Could not save contact log: {e}")
             else:
                 st.success(f"Saved {len(rows_to_save)} entr{'y' if len(rows_to_save)==1 else 'ies'} to team log.")
+                if alert_missing_recipients:
+                    st.warning("Some alerts were not routed because initials were missing or not DK/CH.")
         else:
             st.info("No entries to save — fill in at least one field per store.")
 
     # Build CSV from current widget state
     _csv_rows = []
     for lic in cf_pool:
+        _csv_alert_interval = st.session_state.get(f"cf_{lic}_alert_interval", "")
+        _csv_alert_date = _alert_date_for(
+            _csv_alert_interval,
+            st.session_state.get(f"cf_{lic}_date", today_date),
+            st.session_state.get(f"cf_{lic}_alert_date"),
+        )
+        _csv_alert_recipient = (
+            ALERT_RECIPIENTS.get(st.session_state.get(f"cf_{lic}_initials", ""), "")
+            if _csv_alert_interval else ""
+        )
         _csv_rows.append({
             "License":           lic,
             "Store Name":        df.loc[lic, "Store Name"],
@@ -2197,6 +2330,10 @@ with tab_contact:
             "Commitment Made":   st.session_state.get(f"cf_{lic}_commitment", "No"),
             "Committed Cadence": st.session_state.get(f"cf_{lic}_cadence", ""),
             "Committed Amount":  st.session_state.get(f"cf_{lic}_amount", ""),
+            "Next Outreach":     _csv_alert_interval,
+            "Next Outreach Date": _csv_alert_date.isoformat() if _csv_alert_date else "",
+            "Alert Recipient":   _csv_alert_recipient,
+            "Alert CC":          ALERT_CC if _csv_alert_recipient else "",
             "Notes":             st.session_state.get(f"cf_{lic}_notes", ""),
         })
     dl_col.download_button(
@@ -2210,7 +2347,8 @@ with tab_contact:
     if reset_col.button("Reset", use_container_width=True):
         for lic in cf_pool:
             for field in ("date", "initials", "person", "method",
-                          "commitment", "cadence", "amount", "notes"):
+                          "commitment", "cadence", "amount", "alert_interval",
+                          "alert_date", "alert_date_display", "notes"):
                 st.session_state.pop(f"cf_{lic}_{field}", None)
         st.rerun()
 
@@ -2346,6 +2484,37 @@ with tab_contact:
                                           index=_opt_idx(AMOUNT_OPTIONS, sel_row["Committed Amount"]),
                                           key="log_ed_amount")
 
+            ec1, ec2, ec3 = st.columns([1, 1, 2])
+            ed_alert_interval = ec1.selectbox(
+                "Next Outreach Alert",
+                ALERT_OPTIONS,
+                index=_opt_idx(ALERT_OPTIONS, sel_row.get("Next Outreach", "")),
+                key="log_ed_alert_interval",
+            )
+            _ed_saved_alert_date = _date_val(sel_row.get("Next Outreach Date", ""))
+            if ed_alert_interval == "Other":
+                ed_alert_date = ec2.date_input(
+                    "Next Outreach Date",
+                    value=_ed_saved_alert_date,
+                    format="MM/DD/YYYY",
+                    key="log_ed_alert_date",
+                )
+            else:
+                ed_alert_date = _alert_date_for(ed_alert_interval, ed_date)
+                ec2.text_input(
+                    "Next Outreach Date",
+                    value=ed_alert_date.strftime("%m/%d/%Y") if ed_alert_date else "",
+                    disabled=True,
+                    key="log_ed_alert_date_display",
+                )
+            ed_alert_recipient = ALERT_RECIPIENTS.get(ed_initials, "") if ed_alert_interval else ""
+            if ed_alert_interval and ed_alert_recipient:
+                ec3.caption(f"Monday digest to {ed_alert_recipient}; CC {ALERT_CC}")
+            elif ed_alert_interval:
+                ec3.warning("Select DK or CH initials to route the alert.")
+            else:
+                ec3.caption("No follow-up alert scheduled.")
+
             ed_notes = st.text_area("Notes",
                                      value=("" if pd.isna(sel_row["Notes"]) else str(sel_row["Notes"])),
                                      height=120, key="log_ed_notes")
@@ -2366,6 +2535,11 @@ with tab_contact:
                         "initials":          ed_initials,
                         "person_contacted":  ed_person,
                         "contact_method":    ed_method,
+                        "next_outreach":     ed_alert_interval,
+                        "next_outreach_date": ed_alert_date.isoformat() if ed_alert_date else "",
+                        "alert_recipient":   ed_alert_recipient,
+                        "alert_cc":          ALERT_CC if ed_alert_recipient else "",
+                        "alert_sent_week":   sel_row.get("Alert Sent Week", ""),
                     }])
                 except Exception as e:
                     st.error(f"Could not update entry: {e}")

@@ -40,3 +40,14 @@ token_uri = "https://oauth2.googleapis.com/token"
 ```
 
 The `token_uri` value must be exactly `https://oauth2.googleapis.com/token`; do not use the OAuth Playground URL there. Do not store a short-lived `Authorization: Bearer ...` access token; it expires quickly. If both auth methods are configured, the service account is used first. If neither method is configured, the app falls back to local SQLite, which is not durable on Streamlit Cloud.
+
+## Weekly outreach alerts
+
+The contact form stores next-outreach reminder fields in the `Contact Log` worksheet. To send weekly digest emails:
+
+1. Open the contact-log Google Sheet as `admin@balaclavabrands`.
+2. Go to Extensions -> Apps Script.
+3. Paste the contents of `contact_outreach_alerts.gs`.
+4. Run `createWeeklyOutreachDigestTrigger` once and approve permissions.
+
+The trigger runs every Monday morning and sends one digest per recipient for stores whose `Next Outreach Date` falls within that Monday-Sunday week. DK routes to `danny@balaclavabrands.com`, CH routes to `chris@balaclavabrands.com`, and all alerts CC `geoff@ksavagesupply.com` and `roger@ksavagesupply.com`.
