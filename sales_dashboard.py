@@ -819,6 +819,19 @@ def _meaningful_contact_rows(df):
     )
     return _contact_df_to_save_rows(normalized[meaningful])
 
+def _source_has_any_column(df, names):
+    source_cols = {str(c).strip().lower() for c in getattr(df, "columns", [])}
+    return any(str(name).strip().lower() in source_cols for name in names)
+
+def _restore_contact_rows(df, import_all=False):
+    normalized = _normalize_contact_df(df)
+    if normalized.empty:
+        return []
+    is_team_log_backup = _source_has_any_column(df, ["Saved At", "saved_at"])
+    if import_all or is_team_log_backup:
+        return _contact_df_to_save_rows(normalized)
+    return _meaningful_contact_rows(normalized)
+
 def _contact_log_from_sqlite() -> pd.DataFrame:
     init_storage()
     with sqlite3.connect(storage_path()) as conn:
@@ -2209,15 +2222,21 @@ with tab_contact:
             type=["csv"],
             key="contact_log_restore_upload",
         )
+        restore_import_all = st.checkbox(
+            "Import every valid row",
+            value=False,
+            key="contact_log_restore_all",
+            help="Use for full backups or older CSVs where date-only rows are intentional. Leave off for form exports with blank/default rows.",
+        )
         if st.button("Import CSV to Team Log", use_container_width=True, key="contact_log_restore_btn"):
             if restore_file is None:
                 st.warning("Choose a CSV file first.")
             else:
                 try:
                     restore_df = pd.read_csv(restore_file)
-                    restore_rows = _meaningful_contact_rows(restore_df)
+                    restore_rows = _restore_contact_rows(restore_df, import_all=restore_import_all)
                     if not restore_rows:
-                        st.warning("No meaningful contact entries found in that CSV.")
+                        st.warning("No contact entries found in that CSV. If this backup contains date-only rows, check **Import every valid row** and try again.")
                     else:
                         upsert_contact_log_rows(restore_rows)
                         st.success(f"Imported {len(restore_rows)} contact entr{'y' if len(restore_rows)==1 else 'ies'}.")
