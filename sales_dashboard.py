@@ -91,6 +91,19 @@ MONTH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SHEET_ID_PATTERN = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")
+MANIFEST_REFERENCE_COLUMNS = [
+    "Manifest Reference #",
+    "Manifest Reference",
+    "Manifest Ref #",
+    "Manifest Ref",
+    "Manifest #",
+    "Manifest Number",
+]
+MANIFEST_DATE_COLUMNS = [
+    "Manifested Date",
+    "Transfer Date",
+    "Submitted Date",
+]
 MONTH_NUMS = {
     "jan": 1, "january": 1,
     "feb": 2, "february": 2,
@@ -132,6 +145,30 @@ def parse_amount(value, strict=True):
         if strict:
             raise ValueError(f"Could not parse numeric sales value: {value!r}")
         return 0.0
+
+def first_existing_column(df, candidates):
+    if df is None:
+        return None
+    columns = {str(c).strip().lower(): c for c in getattr(df, "columns", [])}
+    for candidate in candidates:
+        found = columns.get(str(candidate).strip().lower())
+        if found is not None:
+            return found
+    return None
+
+def clean_reference(value):
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if text.lower() in {"", "nan", "none"}:
+        return ""
+    try:
+        number = float(text)
+    except Exception:
+        return text
+    if number.is_integer():
+        return str(int(number))
+    return text
 
 def normalize_year(year_text):
     year = int(year_text)
@@ -599,8 +636,9 @@ def _enrich_order_df(odf: pd.DataFrame) -> pd.DataFrame:
         return "Other"
     odf = odf.copy()
     odf["Brand"] = odf["Sub Product Line"].apply(_brand)
-    if "Submitted Date" in odf.columns:
-        odf["Submitted Date"] = pd.to_datetime(odf["Submitted Date"], errors="coerce")
+    for date_col in ("Submitted Date", "Manifested Date", "Transfer Date", "Estimated delivery date"):
+        if date_col in odf.columns:
+            odf[date_col] = pd.to_datetime(odf[date_col], errors="coerce")
     if "License #" in odf.columns:
         odf["License #"] = odf["License #"].apply(
             lambda x: str(int(float(x))) if pd.notna(x) and str(x).strip() not in ("", "nan") else ""
@@ -2585,6 +2623,8 @@ with tab_orders:
     _min_date = _all_dates.min().date() if not _all_dates.empty else datetime.now().date()
     _max_date = _all_dates.max().date() if not _all_dates.empty else datetime.now().date()
 
+    released_source = ord_df.copy()
+
     # Exclude Bulk from all views
     ord_df = ord_df[ord_df["Brand"] != "Bulk"]
 
@@ -2767,6 +2807,86 @@ with tab_orders:
             **{brand: st.column_config.NumberColumn(brand, format="$%.0f") for brand in BRANDS},
         },
     )
+
+    st.markdown("#### Released from Balaclava")
+    manifest_col = first_existing_column(released_source, MANIFEST_REFERENCE_COLUMNS)
+    if manifest_col is None:
+        st.info("No manifest reference column found in the order data.")
+    else:
+        released_view = released_source.copy()
+        if status_filter != "All" and "Status" in released_view.columns:
+            released_view = released_view[released_view["Status"] == status_filter]
+        if "Submitted Date" in released_view.columns:
+            released_view = released_view[
+                released_view["Submitted Date"].dt.date.between(
+                    min(date_from, date_to), max(date_from, date_to)
+                )
+            ]
+        released_view["_Manifest Reference"] = released_view[manifest_col].apply(clean_reference)
+        released_view = released_view[
+            released_view["_Manifest Reference"].astype(str).str.strip().ne("")
+        ].copy()
+        released_view["_Sales"] = pd.to_numeric(
+            released_view.get("Line Total", 0), errors="coerce"
+        ).fillna(0)
+        released_view["_Units"] = pd.to_numeric(
+            released_view.get("Units", 0), errors="coerce"
+        ).fillna(0)
+        released_view = released_view[released_view["_Sales"] > 0].copy()
+
+        if released_view.empty:
+            st.info("No manifested sales in the current filters.")
+        else:
+            manifest_date_col = first_existing_column(released_view, MANIFEST_DATE_COLUMNS)
+            if manifest_date_col:
+                released_view["_Release Date"] = pd.to_datetime(
+                    released_view[manifest_date_col], errors="coerce"
+                )
+            else:
+                released_view["_Release Date"] = pd.NaT
+            if "Submitted Date" in released_view.columns:
+                released_view["_Release Date"] = released_view["_Release Date"].fillna(
+                    released_view["Submitted Date"]
+                )
+
+            released_summary = (
+                released_view.groupby(["_Release Date", "Client", "License #", "Brand"], dropna=False)
+                .agg(
+                    Sales=("_Sales", "sum"),
+                    Units=("_Units", "sum"),
+                    Orders=("Order #", "nunique"),
+                    Manifests=("_Manifest Reference", "nunique"),
+                    Manifest_Refs=("_Manifest Reference", lambda s: ", ".join(sorted(set(s)))),
+                )
+                .reset_index()
+                .rename(columns={
+                    "_Release Date": "Date",
+                    "Client": "Store",
+                    "License #": "License",
+                    "Manifest_Refs": "Manifest Reference #",
+                })
+                .sort_values(["Date", "Store", "Brand"], ascending=[False, True, True])
+            )
+            released_summary["Date"] = pd.to_datetime(
+                released_summary["Date"], errors="coerce"
+            ).dt.date
+            st.dataframe(
+                released_summary[[
+                    "Date", "Store", "License", "Brand", "Sales", "Units",
+                    "Orders", "Manifests", "Manifest Reference #",
+                ]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Date": st.column_config.DateColumn("Date", format="MM/DD/YYYY"),
+                    "Sales": st.column_config.NumberColumn("Sales", format="$%.0f"),
+                    "Units": st.column_config.NumberColumn("Units", format="%.0f"),
+                },
+            )
+            st.caption(
+                f"{len(released_summary)} release row{'s' if len(released_summary) != 1 else ''} · "
+                f"{fmt_usd(released_summary['Sales'].sum())} manifested sales"
+            )
 
     st.markdown("#### Lapsed Stores")
     _lapsed_window = st.number_input(
