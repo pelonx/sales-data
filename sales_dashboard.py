@@ -1475,6 +1475,12 @@ st.markdown(f"""
   [data-testid="stWidgetLabel"] span {{
     color:#111 !important;
   }}
+  [data-testid="stExpander"] [data-testid="stWidgetLabel"],
+  [data-testid="stExpander"] [data-testid="stWidgetLabel"] label,
+  [data-testid="stExpander"] [data-testid="stWidgetLabel"] p,
+  [data-testid="stExpander"] [data-testid="stWidgetLabel"] span {{
+    color:#F7F8FA !important;
+  }}
   [data-testid="stMetric"] label {{font-size:12px !important}}
 </style>
 """, unsafe_allow_html=True)
