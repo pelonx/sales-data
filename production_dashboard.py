@@ -69,6 +69,9 @@ PRODUCT_COLORS = {
 # Canonical product names — aliases are collapsed to the canonical form
 PRODUCT_ALIASES = {
     "Flower Lot - A's": "A Grade",
+    "Flower -A Grade":  "A Grade",
+    "Flower - A Grade": "A Grade",
+    "A Grand":          "A Grade",
     "A Grade":          "A Grade",
     "Flower Lot - B's": "B Grade",
     "B Grade":          "B Grade",
