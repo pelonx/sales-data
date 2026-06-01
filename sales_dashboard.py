@@ -2335,18 +2335,6 @@ with tab_contact:
         alert_date = _current_alert_date(lic, alert_interval, contacted_date)
         alert_recipient = ALERT_RECIPIENTS.get(initials, "") if alert_interval else ""
         alert_cc = ALERT_CC if alert_recipient else ""
-        has_entry = (
-            commitment == "Yes"
-            or bool(str(cadence or "").strip())
-            or bool(str(amount or "").strip())
-            or bool(str(notes or "").strip())
-            or bool(str(initials or "").strip())
-            or bool(str(person or "").strip())
-            or bool(str(method or "").strip())
-            or bool(str(alert_interval or "").strip())
-        )
-        if not has_entry:
-            return None, bool(alert_interval and not alert_recipient)
         return {
             "license":           lic,
             "store_name":        df.loc[lic, "Store Name"],
