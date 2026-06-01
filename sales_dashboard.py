@@ -561,6 +561,30 @@ def month_col_to_ts(col):
             pass
     return None
 
+def find_latest_populated_month_col(df, months, target_month=None):
+    """Return target month when populated, otherwise the latest populated month before it."""
+    if not months:
+        return None
+    target_month = target_month if target_month in months else find_last_month_col(months)
+
+    def month_total(month):
+        return pd.to_numeric(df[month], errors="coerce").fillna(0).sum()
+
+    if target_month in months and month_total(target_month) > 0.01:
+        return target_month
+
+    target_ts = month_col_to_ts(target_month)
+    candidates = []
+    for month in months:
+        month_ts = month_col_to_ts(month)
+        if target_ts is None or month_ts is None or month_ts <= target_ts:
+            candidates.append(month)
+
+    for month in reversed(candidates or months):
+        if month_total(month) > 0.01:
+            return month
+    return target_month
+
 def contact_status_by_license(contact_log_df):
     status_map = {}
     if contact_log_df is None or contact_log_df.empty:
@@ -2124,7 +2148,8 @@ with tab_sales:
 # ║  TAB — Store Contact Form                                        ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_contact:
-    contact_month = find_last_month_col(months)
+    requested_contact_month = find_last_month_col(months)
+    contact_month = find_latest_populated_month_col(df, months, requested_contact_month)
     today_date = datetime.now().date()
 
     try:
@@ -2148,6 +2173,8 @@ with tab_contact:
     if cf_view == "Top 30 Stores":
         cf_pool = top30_lics
         st.caption(f"Top 30 stores by **{contact_month}** revenue · Ranked highest to lowest")
+        if contact_month != requested_contact_month:
+            st.caption(f"Using **{contact_month}** because **{requested_contact_month}** has no loaded revenue yet.")
     elif cf_view == "Lapsed Priority":
         lapsed_c1, lapsed_c2 = st.columns([1, 1])
         cf_lapsed_window = lapsed_c1.number_input(
