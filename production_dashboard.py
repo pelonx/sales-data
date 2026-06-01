@@ -79,6 +79,34 @@ def fmt_g(v):
     if v is None or (isinstance(v, float) and pd.isna(v)): return "0 g"
     return f"{v:,.0f} g"
 
+def render_material_ppg_metrics(view_g: pd.DataFrame):
+    if view_g.empty or not {"Product", "Total", "Units"}.issubset(view_g.columns):
+        return
+
+    ppg = view_g.copy()
+    ppg["Product"] = ppg["Product"].replace("nan", pd.NA)
+    ppg = (
+        ppg.dropna(subset=["Product"])
+        .groupby("Product", as_index=False)
+        .agg(Revenue=("Total", "sum"), Grams=("Units", "sum"))
+    )
+    ppg = ppg[ppg["Grams"] > 0].copy()
+    if ppg.empty:
+        return
+
+    ppg["$/gram"] = ppg["Revenue"] / ppg["Grams"]
+    ppg = ppg.sort_values("$/gram", ascending=False)
+
+    for start in range(0, len(ppg), 4):
+        row = ppg.iloc[start:start + 4]
+        cols = st.columns(len(row))
+        for col, (_, item) in zip(cols, row.iterrows()):
+            col.metric(
+                str(item["Product"]),
+                f"${item['$/gram']:.2f}/g",
+                fmt_g(item["Grams"]),
+            )
+
 def is_brand_vendor(vendor) -> bool:
     return str(vendor or "").strip().casefold() in BRAND_VENDOR_KEYS
 
@@ -566,6 +594,7 @@ with tab_brand:
         k2.metric("Total Volume",  fmt_g(b_grams))
         k3.metric("Avg $/gram",    f"${b_ppg:.2f}")
         k4.metric("Strains",       b_strains)
+        render_material_ppg_metrics(bview_g)
 
         st.divider()
 
@@ -741,6 +770,7 @@ with tab_wholesale:
         k2.metric("Total Volume",  fmt_g(w_grams))
         k3.metric("Avg $/gram",    f"${w_ppg:.2f}")
         k4.metric("Vendors",       wview["Vendor"].nunique())
+        render_material_ppg_metrics(wview_g)
 
         st.divider()
 
