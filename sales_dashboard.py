@@ -2440,6 +2440,12 @@ with tab_contact:
     except Exception as e:
         st.error(f"Could not load team contact log: {e}")
         log_df = pd.DataFrame(columns=CONTACT_LOG_COLUMNS)
+    if not log_df.empty and "Saved At" in log_df.columns:
+        log_df = (
+            log_df.assign(_saved_sort=pd.to_datetime(log_df["Saved At"], errors="coerce"))
+            .sort_values("_saved_sort", ascending=False, na_position="last", kind="mergesort")
+            .drop(columns=["_saved_sort"])
+        )
     if log_df.empty:
         st.info("No entries saved yet. Fill in the form above and click **Save to Team Log**.")
     else:
