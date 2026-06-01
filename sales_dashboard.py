@@ -204,6 +204,21 @@ def related_match_key(left, right, min_len=5):
         return False
     return left in right or right in left
 
+def contact_match_keys(*values):
+    keys = set()
+    for value in values:
+        lic_key = license_match_key(value)
+        store_key = store_match_key(value)
+        for key in (lic_key, store_key):
+            if len(key) >= 5:
+                keys.add(key)
+        raw = str(value or "").upper()
+        for token in re.findall(r"[A-Z]*\d[A-Z0-9]*", raw):
+            key = license_match_key(token)
+            if len(key) >= 5:
+                keys.add(key)
+    return keys
+
 def normalize_year(year_text):
     year = int(year_text)
     if year < 100:
@@ -2207,21 +2222,28 @@ with tab_contact:
         except Exception:
             return ""
 
+    def _match_keys_for_lic(lic):
+        try:
+            return contact_match_keys(lic, df.loc[lic, "Store Name"])
+        except Exception:
+            return contact_match_keys(lic)
+
     # Saved entries for this month pre-populate widgets.
     _saved_map_by_license: dict = {}
     _saved_map_by_store: dict = {}
     _logged_lics: set = set()
     _logged_stores: set = set()
-    _logged_lic_list: list = []
-    _logged_store_list: list = []
+    _logged_contact_keys: set = set()
+    _logged_contact_key_list: list = []
     if not _saved_log.empty:
         _saved_log = _saved_log.copy()
         _saved_log["_saved_sort"] = pd.to_datetime(_saved_log["Saved At"], errors="coerce")
         _saved_log = _saved_log.sort_values("_saved_sort")
         _logged_lics = {k for k in _saved_log["License"].apply(_lic_key) if k}
         _logged_stores = {k for k in _saved_log["Store Name"].apply(store_match_key) if k}
-        _logged_lic_list = sorted(_logged_lics, key=len, reverse=True)
-        _logged_store_list = sorted(_logged_stores, key=len, reverse=True)
+        for _, _r in _saved_log.iterrows():
+            _logged_contact_keys.update(contact_match_keys(_r.get("License", ""), _r.get("Store Name", "")))
+        _logged_contact_key_list = sorted(_logged_contact_keys, key=len, reverse=True)
         _contact_month_key = canonical_month_label(contact_month)
         _saved_month_keys = _saved_log["Month"].apply(canonical_month_label)
         for _, _r in _saved_log[_saved_month_keys == _contact_month_key].iterrows():
@@ -2242,11 +2264,16 @@ with tab_contact:
     def _has_logged_contact(lic):
         lic_key = _lic_key(lic)
         store_key = _store_key_for_lic(lic)
+        match_keys = _match_keys_for_lic(lic)
         return (
             lic_key in _logged_lics
             or store_key in _logged_stores
-            or any(related_match_key(lic_key, saved_key, min_len=5) for saved_key in _logged_lic_list)
-            or any(related_match_key(store_key, saved_key, min_len=8) for saved_key in _logged_store_list)
+            or bool(match_keys & _logged_contact_keys)
+            or any(
+                related_match_key(match_key, saved_key, min_len=5)
+                for match_key in match_keys
+                for saved_key in _logged_contact_key_list
+            )
         )
 
     def _saved(lic, field, default=""):
@@ -2364,6 +2391,7 @@ with tab_contact:
                     "Visible License": lic,
                     "License Key": _lic_key(lic),
                     "Store Key": _store_key_for_lic(lic),
+                    "Match Keys": ", ".join(sorted(_match_keys_for_lic(lic))[:4]),
                     "Matched": _has_logged_contact(lic),
                 }
                 for lic in display_lics[:10]
@@ -2371,6 +2399,10 @@ with tab_contact:
             _logged_sample = _saved_log[["Store Name", "License", "Month"]].head(10).copy()
             _logged_sample["License Key"] = _logged_sample["License"].apply(_lic_key)
             _logged_sample["Store Key"] = _logged_sample["Store Name"].apply(store_match_key)
+            _logged_sample["Match Keys"] = _logged_sample.apply(
+                lambda r: ", ".join(sorted(contact_match_keys(r["License"], r["Store Name"]))[:4]),
+                axis=1,
+            )
             d1, d2 = st.columns(2)
             d1.dataframe(_visible_sample, width="stretch", hide_index=True)
             d2.dataframe(_logged_sample, width="stretch", hide_index=True)
