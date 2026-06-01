@@ -61,3 +61,5 @@ License, Store Name, Address, City, State, Zip, Latitude, Longitude
 ```
 
 Optional columns are `Google Place ID`, `Geocoded At`, and `Geocode Status`. Add `google_maps_api_key` to Streamlit secrets to geocode missing coordinates. Add `google_maps_browser_key` to render the tab with Google Maps in the browser; otherwise the app falls back to an OpenStreetMap-backed Plotly map for already-supplied coordinates.
+
+Retailer-market columns such as `Sales Last Month`, `Sales Rank`, `County`, `Flowers & Prerolls`, `Concentrates & Cartridges`, `Edibles, Topicals, Infused, etc.`, and `UBI` are preserved when present and shown in the Territory Map analytics table.

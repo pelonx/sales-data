@@ -86,6 +86,9 @@ TERRITORY_BRANDS = ["K. Savage", "Mayfield", "Leisure Land"]
 TERRITORY_LOCATION_COLUMNS = [
     "License", "Store Name", "Address", "City", "State", "Zip",
     "Latitude", "Longitude", "Google Place ID", "Geocoded At", "Geocode Status",
+    "License Type", "County", "Sales Last Month", "Sales Rank",
+    "Flowers & Prerolls", "Concentrates & Cartridges",
+    "Edibles, Topicals, Infused, etc.", "UBI",
 ]
 TERRITORY_MAP_COLORS = {
     "Pitch Mayfield": "#7C5CFF",
@@ -825,9 +828,26 @@ def init_storage():
                 google_place_id TEXT,
                 geocoded_at TEXT,
                 geocode_status TEXT,
+                license_type TEXT,
+                county TEXT,
+                sales_last_month TEXT,
+                sales_rank TEXT,
+                flowers_prerolls TEXT,
+                concentrates_cartridges TEXT,
+                edibles_topicals_infused TEXT,
+                ubi TEXT,
                 updated_at TEXT NOT NULL
             )
         """)
+        for col in (
+            "license_type TEXT", "county TEXT", "sales_last_month TEXT", "sales_rank TEXT",
+            "flowers_prerolls TEXT", "concentrates_cartridges TEXT",
+            "edibles_topicals_infused TEXT", "ubi TEXT",
+        ):
+            try:
+                conn.execute(f"ALTER TABLE store_locations ADD COLUMN {col}")
+            except Exception:
+                pass
 
 def get_setting(key: str, default: str = "") -> str:
     init_storage()
@@ -884,6 +904,16 @@ def normalize_store_locations(raw_df):
         "Google Place ID": ["Google Place ID", "Place ID", "place_id", "google_place_id"],
         "Geocoded At": ["Geocoded At", "geocoded_at"],
         "Geocode Status": ["Geocode Status", "geocode_status", "Status"],
+        "License Type": ["License Type", "license_type"],
+        "County": ["County"],
+        "Sales Last Month": ["Sales Last Month", "Market Sales Last Month", "Monthly Sales"],
+        "Sales Rank": ["Sales Rank", "Rank"],
+        "Flowers & Prerolls": ["Flowers & Prerolls", "Flower Rank", "Flowers and Prerolls"],
+        "Concentrates & Cartridges": ["Concentrates & Cartridges", "Concentrate Rank"],
+        "Edibles, Topicals, Infused, etc.": [
+            "Edibles, Topicals, Infused, etc.", "Edibles Rank", "Topicals Rank", "Infused Rank",
+        ],
+        "UBI": ["UBI"],
     }
 
     out = pd.DataFrame(index=raw_df.index)
@@ -938,7 +968,10 @@ def load_store_locations():
         conn.row_factory = sqlite3.Row
         rows = conn.execute("""
             SELECT license, store_name, address, city, state, zip,
-                   latitude, longitude, google_place_id, geocoded_at, geocode_status
+                   latitude, longitude, google_place_id, geocoded_at, geocode_status,
+                   license_type, county, sales_last_month, sales_rank,
+                   flowers_prerolls, concentrates_cartridges,
+                   edibles_topicals_infused, ubi
             FROM store_locations
             ORDER BY store_name COLLATE NOCASE, license
         """).fetchall()
@@ -956,6 +989,14 @@ def load_store_locations():
         "google_place_id": "Google Place ID",
         "geocoded_at": "Geocoded At",
         "geocode_status": "Geocode Status",
+        "license_type": "License Type",
+        "county": "County",
+        "sales_last_month": "Sales Last Month",
+        "sales_rank": "Sales Rank",
+        "flowers_prerolls": "Flowers & Prerolls",
+        "concentrates_cartridges": "Concentrates & Cartridges",
+        "edibles_topicals_infused": "Edibles, Topicals, Infused, etc.",
+        "ubi": "UBI",
     })
     return normalize_store_locations(frame)
 
@@ -968,14 +1009,20 @@ def save_store_locations(locations_df):
         conn.executemany("""
             INSERT INTO store_locations
                 (license_key, license, store_name, address, city, state, zip,
-                 latitude, longitude, google_place_id, geocoded_at, geocode_status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 latitude, longitude, google_place_id, geocoded_at, geocode_status,
+                 license_type, county, sales_last_month, sales_rank,
+                 flowers_prerolls, concentrates_cartridges,
+                 edibles_topicals_infused, ubi, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             (
                 license_match_key(row["License"]), row["License"], row["Store Name"],
                 row["Address"], row["City"], row["State"], row["Zip"],
                 row["Latitude"], row["Longitude"], row["Google Place ID"],
-                row["Geocoded At"], row["Geocode Status"], now,
+                row["Geocoded At"], row["Geocode Status"],
+                row["License Type"], row["County"], row["Sales Last Month"], row["Sales Rank"],
+                row["Flowers & Prerolls"], row["Concentrates & Cartridges"],
+                row["Edibles, Topicals, Infused, etc."], row["UBI"], now,
             )
             for _, row in normalized.iterrows()
         ])
@@ -1003,8 +1050,14 @@ def google_maps_browser_key():
     )
 
 def location_address_query(row):
+    address = str(row.get("Address", "")).strip()
+    if address and re.search(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b", address):
+        return address
     parts = [row.get("Address", ""), row.get("City", ""), row.get("State", ""), row.get("Zip", "")]
     return ", ".join([str(p).strip() for p in parts if str(p).strip()])
+
+def parse_market_sales(value):
+    return parse_amount(value, strict=False)
 
 def geocode_store_locations(locations_df, api_key, limit=25):
     import requests as _req
@@ -1151,6 +1204,7 @@ def build_territory_store_table(locations_df, revenue_df, months, order_df, acti
     stores["Brand Revenue"] = pd.to_numeric(stores.get("Brand Revenue", 0), errors="coerce").fillna(0)
     stores["Revenue Total"] = pd.to_numeric(stores.get("Revenue Total", 0), errors="coerce").fillna(0)
     stores["Latest Month Revenue"] = pd.to_numeric(stores.get("Latest Month Revenue", 0), errors="coerce").fillna(0)
+    stores["Market Sales Last Month"] = stores["Sales Last Month"].apply(parse_market_sales)
     stores["Active Brands"] = stores.apply(
         lambda r: ", ".join([brand for brand in TERRITORY_BRANDS if r.get(f"Carries {brand}", False)]) or "None",
         axis=1,
@@ -3471,7 +3525,11 @@ with tab_territory:
             key="territory_active_days",
             help="Paid orders inside this many days from the latest order date count as active brand placement.",
         )
-        include_missing = control_cols[2].checkbox("Missing Locations", value=False, key="territory_include_missing")
+        include_missing = control_cols[2].checkbox(
+            "Show Unmapped",
+            value=not bool(coord_ready.any()),
+            key="territory_include_missing",
+        )
         search_term = control_cols[3].text_input(
             "Search",
             placeholder="Store name, license, city...",
@@ -3481,13 +3539,17 @@ with tab_territory:
         stores = build_territory_store_table(locations, df, months, ord_df, active_days)
         stores, nearby_pairs = enrich_territory_proximity(stores, radius_miles)
 
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         pitch_count = int((stores["Recommendation"] == "Pitch Mayfield").sum())
         conflict_count = int(((stores["Nearby K. Savage"] > 0) & (~stores["Carries K. Savage"])).sum())
-        m1.metric("Mapped Stores", f"{int((stores['Latitude'].notna() & stores['Longitude'].notna()).sum()):,}")
-        m2.metric("Pitch Mayfield", f"{pitch_count:,}")
-        m3.metric("K. Savage Conflicts", f"{conflict_count:,}")
-        m4.metric("Nearby Pairs", f"{len(nearby_pairs):,}")
+        mapped_count = int((stores["Latitude"].notna() & stores["Longitude"].notna()).sum())
+        need_coords = int(((stores["Latitude"].isna() | stores["Longitude"].isna()) & stores["Address"].astype(str).str.strip().ne("")).sum())
+        market_sales = float(stores["Market Sales Last Month"].sum())
+        m1.metric("Retailers Loaded", f"{len(stores):,}")
+        m2.metric("Mapped Stores", f"{mapped_count:,}")
+        m3.metric("Need Coordinates", f"{need_coords:,}")
+        m4.metric("Pitch Mayfield", f"{pitch_count:,}")
+        m5.metric("Market Sales", fmt_usd(market_sales))
 
         filter_cols = st.columns([1, 1, 2])
         rec_options = ["All"] + sorted(stores["Recommendation"].dropna().unique().tolist())
@@ -3525,7 +3587,7 @@ with tab_territory:
             filtered_stores["Latitude"].notna() & filtered_stores["Longitude"].notna()
         ]
         if mapped_filtered.empty:
-            st.info("No mapped stores match the current filters.")
+            st.info("No mapped stores match the current filters. Geocode addresses to enable the map and proximity signals; the retailer table below still shows loaded rows.")
         else:
             rendered_google = render_google_territory_map(mapped_filtered) if use_google_map else False
             if not rendered_google:
@@ -3533,15 +3595,18 @@ with tab_territory:
 
         st.subheader("Placement Signals")
         table_cols = [
-            "Recommendation", "Store Name", "License", "City", "Active Brands",
+            "Recommendation", "Store Name", "License", "City", "County",
+            "Market Sales Last Month", "Sales Rank", "Active Brands",
             "Nearby K. Savage", "Nearby Mayfield", "Nearest Store", "Nearest Distance",
             "Nearby Detail", "K. Savage", "Mayfield", "Leisure Land",
             "Orders", "Last Order", "Brand Revenue", "Revenue Total",
+            "Flowers & Prerolls", "Concentrates & Cartridges",
+            "Edibles, Topicals, Infused, etc.",
         ]
         display_cols = [col for col in table_cols if col in filtered_stores.columns]
         display_stores = filtered_stores[display_cols].sort_values(
-            ["Recommendation", "Nearby K. Savage", "Brand Revenue"],
-            ascending=[True, False, False],
+            ["Recommendation", "Nearby K. Savage", "Market Sales Last Month", "Brand Revenue"],
+            ascending=[True, False, False, False],
         )
         st.dataframe(
             display_stores,
@@ -3554,6 +3619,7 @@ with tab_territory:
                 "Leisure Land": st.column_config.NumberColumn("Leisure Land", format="$%.0f"),
                 "Brand Revenue": st.column_config.NumberColumn("Brand Revenue", format="$%.0f"),
                 "Revenue Total": st.column_config.NumberColumn("Revenue Total", format="$%.0f"),
+                "Market Sales Last Month": st.column_config.NumberColumn("Market Sales", format="$%.0f"),
                 "Last Order": st.column_config.DatetimeColumn("Last Order", format="MM/DD/YYYY"),
             },
         )
