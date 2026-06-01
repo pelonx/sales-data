@@ -185,6 +185,14 @@ def license_match_key(value):
         return text.lstrip("0") or "0"
     return text
 
+def store_match_key(value):
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip().upper()
+    if text.lower() in {"", "nan", "none"}:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", text)
+
 def normalize_year(year_text):
     year = int(year_text)
     if year < 100:
@@ -2182,21 +2190,45 @@ with tab_contact:
     def _lic_key(lic):
         return license_match_key(lic)
 
+    def _store_key_for_lic(lic):
+        try:
+            return store_match_key(df.loc[lic, "Store Name"])
+        except Exception:
+            return ""
+
     # Saved entries for this month pre-populate widgets.
-    _saved_map: dict = {}
+    _saved_map_by_license: dict = {}
+    _saved_map_by_store: dict = {}
     _logged_lics: set = set()
+    _logged_stores: set = set()
     if not _saved_log.empty:
         _saved_log = _saved_log.copy()
         _saved_log["_saved_sort"] = pd.to_datetime(_saved_log["Saved At"], errors="coerce")
         _saved_log = _saved_log.sort_values("_saved_sort")
-        _logged_lics = set(_saved_log["License"].apply(_lic_key))
+        _logged_lics = {k for k in _saved_log["License"].apply(_lic_key) if k}
+        _logged_stores = {k for k in _saved_log["Store Name"].apply(store_match_key) if k}
         _contact_month_key = canonical_month_label(contact_month)
         _saved_month_keys = _saved_log["Month"].apply(canonical_month_label)
         for _, _r in _saved_log[_saved_month_keys == _contact_month_key].iterrows():
-            _saved_map[_lic_key(_r["License"])] = _r.to_dict()
+            _lic_saved_key = _lic_key(_r["License"])
+            _store_saved_key = store_match_key(_r["Store Name"])
+            if _lic_saved_key:
+                _saved_map_by_license[_lic_saved_key] = _r.to_dict()
+            if _store_saved_key:
+                _saved_map_by_store[_store_saved_key] = _r.to_dict()
+
+    def _saved_entry(lic):
+        return (
+            _saved_map_by_license.get(_lic_key(lic))
+            or _saved_map_by_store.get(_store_key_for_lic(lic))
+            or {}
+        )
+
+    def _has_logged_contact(lic):
+        return _lic_key(lic) in _logged_lics or _store_key_for_lic(lic) in _logged_stores
 
     def _saved(lic, field, default=""):
-        v = _saved_map.get(_lic_key(lic), {}).get(field, default)
+        v = _saved_entry(lic).get(field, default)
         return v if v is not None else default
 
     def _sel_idx(options, value):
@@ -2297,11 +2329,34 @@ with tab_contact:
         or _q in df.loc[lic, "Store Name"].lower()
         or _q in lic.lower()
     ]
+    _visible_saved_matches = sum(1 for lic in display_lics if _has_logged_contact(lic))
+    if not _saved_log.empty:
+        with st.expander("Contact log match diagnostics"):
+            st.caption(
+                f"{len(_saved_log)} saved contact entr{'y' if len(_saved_log) == 1 else 'ies'} loaded · "
+                f"{_visible_saved_matches} matched in current visible store list"
+            )
+            _visible_sample = pd.DataFrame([
+                {
+                    "Visible Store": df.loc[lic, "Store Name"],
+                    "Visible License": lic,
+                    "License Key": _lic_key(lic),
+                    "Store Key": _store_key_for_lic(lic),
+                    "Matched": _has_logged_contact(lic),
+                }
+                for lic in display_lics[:10]
+            ])
+            _logged_sample = _saved_log[["Store Name", "License", "Month"]].head(10).copy()
+            _logged_sample["License Key"] = _logged_sample["License"].apply(_lic_key)
+            _logged_sample["Store Key"] = _logged_sample["Store Name"].apply(store_match_key)
+            d1, d2 = st.columns(2)
+            d1.dataframe(_visible_sample, use_container_width=True, hide_index=True)
+            d2.dataframe(_logged_sample, use_container_width=True, hide_index=True)
 
     for rank, lic in enumerate(display_lics, 1):
         store_name = df.loc[lic, "Store Name"]
         revenue = cf_display_by_lic.get(lic, fmt_usd(df.loc[lic, contact_month]))
-        has_saved = _lic_key(lic) in _logged_lics
+        has_saved = _has_logged_contact(lic)
         label = f"{'✅ ' if has_saved else ''}#{rank}  {store_name}  ·  {lic}  ·  {revenue}"
         with st.expander(label):
             with st.form(f"store_contact_form_{lic}", clear_on_submit=False):
