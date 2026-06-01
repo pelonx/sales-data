@@ -63,3 +63,16 @@ License, Store Name, Address, City, State, Zip, Latitude, Longitude
 Optional columns are `Google Place ID`, `Geocoded At`, and `Geocode Status`. Add `google_maps_api_key` to Streamlit secrets to geocode missing coordinates. Add `google_maps_browser_key` to render the tab with Google Maps in the browser; otherwise the app falls back to an OpenStreetMap-backed Plotly map for already-supplied coordinates.
 
 Retailer-market columns such as `Sales Last Month`, `Sales Rank`, `County`, `Flowers & Prerolls`, `Concentrates & Cartridges`, `Edibles, Topicals, Infused, etc.`, and `UBI` are preserved when present and shown in the Territory Map analytics table.
+
+### Geocoding retailer addresses in Google Sheets
+
+To geocode the retailer address tab directly in Google Sheets:
+
+1. Open the shared Google Sheet.
+2. Go to Extensions -> Apps Script.
+3. Add a new script file and paste `retailer_geocode.gs`.
+4. Run `geocodeRetailerAddresses` once and approve permissions.
+5. Repeat until all rows have `Latitude` and `Longitude`, or run `createRetailerGeocodeTrigger` to process a batch every 5 minutes.
+6. Run `deleteRetailerGeocodeTriggers` when geocoding is complete.
+
+The script targets the retailer tab with gid `1421425539`, geocodes 50 missing-coordinate rows per run, and writes `Latitude`, `Longitude`, `Google Place ID`, `Geocoded At`, and `Geocode Status`.
