@@ -1,6 +1,18 @@
+const RETAILER_SPREADSHEET_ID = '1kY5e6SXd7eQ7GJx-jg6M1R60WCCZ9I_25Eb7ZmuDKHw';
 const RETAILER_SHEET_GID = 1421425539;
 const RETAILER_GEOCODE_BATCH_SIZE = 50;
 const RETAILER_GEOCODE_SLEEP_MS = 150;
+
+function checkRetailerGeocodeSetup() {
+  const sheet = getRetailerGeocodeSheet_();
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
+  const col = retailerGeocodeIndexMap_(headers);
+  const firstRow = sheet.getRange(2, 1, 1, sheet.getLastColumn()).getValues()[0];
+  Logger.log(`Spreadsheet: ${sheet.getParent().getName()}`);
+  Logger.log(`Sheet: ${sheet.getName()}; gid: ${sheet.getSheetId()}; rows: ${sheet.getLastRow()}`);
+  Logger.log(`Address column found: ${col.Address !== undefined}`);
+  Logger.log(`First address query: ${retailerGeocodeAddress_(firstRow, col)}`);
+}
 
 function geocodeRetailerAddresses() {
   const sheet = getRetailerGeocodeSheet_();
@@ -102,7 +114,7 @@ function deleteRetailerGeocodeTriggers() {
 }
 
 function getRetailerGeocodeSheet_() {
-  const spreadsheet = SpreadsheetApp.getActive();
+  const spreadsheet = SpreadsheetApp.openById(RETAILER_SPREADSHEET_ID);
   const sheet = spreadsheet.getSheets().find(s => s.getSheetId() === RETAILER_SHEET_GID);
   if (!sheet) {
     throw new Error(`Retailer sheet not found for gid ${RETAILER_SHEET_GID}`);

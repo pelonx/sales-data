@@ -3442,6 +3442,7 @@ with tab_territory:
                     st.warning("Enter a location sheet URL.")
                 else:
                     try:
+                        load_location_sheet_as_df.clear()
                         sheet_locations, sheet_shape = load_location_sheet_as_df(
                             loc_sheet_url.strip(), loc_sheet_gid.strip() or "0"
                         )

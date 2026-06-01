@@ -71,8 +71,9 @@ To geocode the retailer address tab directly in Google Sheets:
 1. Open the shared Google Sheet.
 2. Go to Extensions -> Apps Script.
 3. Add a new script file and paste `retailer_geocode.gs`.
-4. Run `geocodeRetailerAddresses` once and approve permissions.
-5. Repeat until all rows have `Latitude` and `Longitude`, or run `createRetailerGeocodeTrigger` to process a batch every 5 minutes.
-6. Run `deleteRetailerGeocodeTriggers` when geocoding is complete.
+4. Run `checkRetailerGeocodeSetup` and confirm the log shows the retailer sheet and a first address.
+5. Run `geocodeRetailerAddresses` once and approve permissions.
+6. Repeat until all rows have `Latitude` and `Longitude`, or run `createRetailerGeocodeTrigger` to process a batch every 5 minutes.
+7. Run `deleteRetailerGeocodeTriggers` when geocoding is complete.
 
 The script targets the retailer tab with gid `1421425539`, geocodes 50 missing-coordinate rows per run, and writes `Latitude`, `Longitude`, `Google Place ID`, `Geocoded At`, and `Geocode Status`.
