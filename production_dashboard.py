@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import requests
 import sqlite3
 import os
@@ -89,6 +90,89 @@ def _shade_hex(hex_color: str, factor: float) -> str:
     else:
         r, g, b = int(r * factor), int(g * factor), int(b * factor)
     return f"#{min(r,255):02x}{min(g,255):02x}{min(b,255):02x}"
+
+def ppg_band_chart(ppg_data: pd.DataFrame, product_col="Product", brand_col=None):
+    data = ppg_data.copy()
+    data = data[pd.to_numeric(data["$/gram"], errors="coerce").fillna(0) > 0].copy()
+    if data.empty:
+        return None
+
+    prod_order = (
+        data.groupby(product_col)["$/gram"].median()
+        .sort_values()
+        .index.tolist()
+    )
+    product_colors = {
+        product: _shade_hex("#4CE89C", 0.45 + (i / max(len(prod_order) - 1, 1)) * 0.85)
+        for i, product in enumerate(prod_order)
+    }
+
+    strain_order = (
+        data.groupby("Strain")["$/gram"].max()
+        .sort_values(ascending=True)
+        .index.tolist()
+    )
+
+    band_rows = []
+    for strain, group in data.groupby("Strain", sort=False):
+        group = group.sort_values(["$/gram", product_col], ascending=[True, True])
+        last_price = 0.0
+        for _, row in group.iterrows():
+            price = float(row["$/gram"])
+            width = max(price - last_price, 0)
+            if width <= 0:
+                continue
+            band_rows.append({
+                "Strain": strain,
+                product_col: row[product_col],
+                "Brand": row.get(brand_col, "") if brand_col else "",
+                "$/gram": price,
+                "Band Start": last_price,
+                "Band Width": width,
+                "Label": f"${price:.2f}",
+            })
+            last_price = max(last_price, price)
+
+    band_data = pd.DataFrame(band_rows)
+    if band_data.empty:
+        return None
+
+    fig = go.Figure()
+    for product in prod_order:
+        sub = band_data[band_data[product_col] == product]
+        if sub.empty:
+            continue
+        custom_cols = [product_col, "$/gram", "Brand", "Band Start", "Band Width"]
+        fig.add_trace(go.Bar(
+            x=sub["Band Width"],
+            y=sub["Strain"],
+            base=sub["Band Start"],
+            orientation="h",
+            name=product,
+            marker_color=product_colors.get(product, "#4CE89C"),
+            text=sub["Label"],
+            customdata=sub[custom_cols],
+            hovertemplate=(
+                "%{customdata[0]}<br>"
+                "%{y}<br>"
+                "%{customdata[2]}<br>"
+                "Average $/gram: $%{customdata[1]:.2f}"
+                "<extra></extra>"
+            ),
+        ))
+
+    fig.update_traces(textposition="inside", insidetextanchor="middle", cliponaxis=False)
+    fig.update_layout(
+        barmode="overlay",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#e3e3d8", showlegend=True, legend_title="Product",
+        height=max(350, len(strain_order) * 28),
+        margin=dict(l=0, r=20, t=10, b=10),
+        xaxis_title="$ per gram", yaxis_title="",
+        xaxis=dict(tickprefix="$"),
+        yaxis=dict(categoryorder="array", categoryarray=strain_order),
+    )
+    return fig
 
 # ── SQLite persistence ────────────────────────────────────────────────────────
 def _db_path() -> str:
@@ -581,53 +665,9 @@ with tab_brand:
             .reset_index(name="$/gram")
         )
         if not ppg_data.empty:
-            _ppg_types = sorted(ppg_data["Product"].unique().tolist())
-            _n_t = max(len(_ppg_types), 1)
-            _ppg_cmap = {
-                t: _shade_hex("#4CE89C", 0.5 + (i / max(_n_t - 1, 1)) * 0.9)
-                for i, t in enumerate(_ppg_types)
-            }
-            # Sort product types by their median $/gram so gradient maps cheapest→most expensive
-            _prod_order = (
-                ppg_data.groupby("Product")["$/gram"].median()
-                .sort_values().index.tolist()
-            )
-            _ppg_cmap = {
-                t: _shade_hex("#4CE89C", 0.45 + (i / max(len(_prod_order) - 1, 1)) * 0.85)
-                for i, t in enumerate(_prod_order)
-            }
-            # Sort strains by total $/gram (sum of segments) descending → highest at top
-            _strain_order = (
-                ppg_data.groupby("Strain")["$/gram"].sum()
-                .sort_values(ascending=True).index.tolist()
-            )
-            ppg_data["Strain"] = pd.Categorical(ppg_data["Strain"], categories=_strain_order, ordered=True)
-            ppg_data["Product"] = pd.Categorical(ppg_data["Product"], categories=_prod_order, ordered=True)
-            ppg_data = ppg_data.sort_values(["Strain", "Product"])
-            ppg_data["_label"] = ppg_data.apply(
-                lambda r: f"${r['$/gram']:.2f}  {r['Product']}", axis=1
-            )
-            fig_ppg = px.bar(
-                ppg_data,
-                x="$/gram", y="Strain", color="Product",
-                orientation="h", barmode="stack",
-                color_discrete_map=_ppg_cmap,
-                text="_label",
-                custom_data=["Brand", "Product"],
-            )
-            fig_ppg.update_traces(
-                textposition="inside", insidetextanchor="middle",
-                hovertemplate="%{customdata[1]}<br>%{y} (%{customdata[0]})<br>$/gram: %{x:.2f}<extra></extra>",
-                cliponaxis=False,
-            )
-            fig_ppg.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#e3e3d8", showlegend=True, legend_title="Product",
-                height=max(350, ppg_data["Strain"].nunique() * 28),
-                margin=dict(l=0, r=20, t=10, b=10),
-                xaxis_title="$ per gram", yaxis_title="",
-            )
-            st.plotly_chart(fig_ppg, use_container_width=True)
+            fig_ppg = ppg_band_chart(ppg_data, product_col="Product", brand_col="Brand")
+            if fig_ppg is not None:
+                st.plotly_chart(fig_ppg, use_container_width=True)
 
         st.divider()
 
@@ -736,49 +776,9 @@ with tab_wholesale:
             .reset_index(name="$/gram")
         )
         if not w_ppg_data.empty:
-            _w_prods = sorted(w_ppg_data["Product"].unique().tolist())
-            _n_wt = max(len(_w_prods), 1)
-            _w_type_cmap = {
-                t: _shade_hex("#4CE89C", 0.5 + (i / max(_n_wt - 1, 1)) * 0.9)
-                for i, t in enumerate(_w_prods)
-            }
-            _w_prod_order = (
-                w_ppg_data.groupby("Product")["$/gram"].median()
-                .sort_values().index.tolist()
-            )
-            _w_type_cmap = {
-                t: _shade_hex("#4CE89C", 0.45 + (i / max(len(_w_prod_order) - 1, 1)) * 0.85)
-                for i, t in enumerate(_w_prod_order)
-            }
-            _w_strain_order = (
-                w_ppg_data.groupby("Strain")["$/gram"].sum()
-                .sort_values(ascending=True).index.tolist()
-            )
-            w_ppg_data["Strain"] = pd.Categorical(w_ppg_data["Strain"], categories=_w_strain_order, ordered=True)
-            w_ppg_data["Product"] = pd.Categorical(w_ppg_data["Product"], categories=_w_prod_order, ordered=True)
-            w_ppg_data = w_ppg_data.sort_values(["Strain", "Product"])
-            w_ppg_data["_label"] = w_ppg_data.apply(
-                lambda r: f"${r['$/gram']:.2f}  {r['Product']}", axis=1
-            )
-            fig_wppg = px.bar(
-                w_ppg_data, x="$/gram", y="Strain", color="Product",
-                orientation="h", barmode="stack",
-                color_discrete_map=_w_type_cmap,
-                text="_label",
-            )
-            fig_wppg.update_traces(
-                textposition="inside", insidetextanchor="middle",
-                hovertemplate="%{text}<br>$/gram: %{x:.2f}<extra></extra>",
-                cliponaxis=False,
-            )
-            fig_wppg.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#e3e3d8", legend_title="Product",
-                height=max(300, w_ppg_data["Strain"].nunique() * 28),
-                margin=dict(l=0, r=20, t=10, b=10),
-                xaxis_title="$ per gram", yaxis_title="",
-            )
-            st.plotly_chart(fig_wppg, use_container_width=True)
+            fig_wppg = ppg_band_chart(w_ppg_data, product_col="Product")
+            if fig_wppg is not None:
+                st.plotly_chart(fig_wppg, use_container_width=True)
 
         st.divider()
 
