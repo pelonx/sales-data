@@ -10,6 +10,35 @@ from urllib.parse import urlparse
 
 st.set_page_config(page_title="Production Sales", layout="wide")
 
+# ── Password guard ────────────────────────────────────────────────────────────
+def _configured_password() -> str:
+    for key in ("production_password", "password"):
+        try:
+            value = st.secrets.get(key, "")
+            if str(value).strip():
+                return str(value)
+        except Exception:
+            pass
+    return os.environ.get("PRODUCTION_PASSWORD", "")
+
+_password = _configured_password()
+if _password:
+    if not st.session_state.get("production_authenticated"):
+        st.title("Production Sales")
+        pwd = st.text_input("Password", type="password")
+        if st.button("Sign in", type="primary"):
+            if pwd == _password:
+                st.session_state["production_authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+        st.stop()
+
+    with st.sidebar:
+        if st.button("Sign out", key="production_sidebar_signout"):
+            st.session_state["production_authenticated"] = False
+            st.rerun()
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 BRAND_VENDORS   = {"Minglewood Brands", "SALISH SEA INDUSTRIES L.L.C."}
 EXCLUDE_VENDORS = {"CONFIDENCE ANALYTICS"}
