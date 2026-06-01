@@ -2159,16 +2159,29 @@ with tab_contact:
 
     METHOD_OPTIONS = ["", "In-person", "Phone", "Email"]
 
+    if st.session_state.get("contact_log_notice"):
+        st.success(st.session_state.pop("contact_log_notice"))
+    if st.session_state.get("contact_log_warning"):
+        st.warning(st.session_state.pop("contact_log_warning"))
+
+    def _lic_key(lic):
+        return str(lic or "").strip()
+
     # Saved entries for this month pre-populate widgets.
     _saved_map: dict = {}
+    _logged_lics: set = set()
     if not _saved_log.empty:
+        _saved_log = _saved_log.copy()
+        _saved_log["_saved_sort"] = pd.to_datetime(_saved_log["Saved At"], errors="coerce")
+        _saved_log = _saved_log.sort_values("_saved_sort")
+        _logged_lics = set(_saved_log["License"].apply(_lic_key))
         _contact_month_key = canonical_month_label(contact_month)
         _saved_month_keys = _saved_log["Month"].apply(canonical_month_label)
         for _, _r in _saved_log[_saved_month_keys == _contact_month_key].iterrows():
-            _saved_map[_r["License"]] = _r.to_dict()
+            _saved_map[_lic_key(_r["License"])] = _r.to_dict()
 
     def _saved(lic, field, default=""):
-        v = _saved_map.get(lic, {}).get(field, default)
+        v = _saved_map.get(_lic_key(lic), {}).get(field, default)
         return v if v is not None else default
 
     def _sel_idx(options, value):
@@ -2273,7 +2286,7 @@ with tab_contact:
     for rank, lic in enumerate(display_lics, 1):
         store_name = df.loc[lic, "Store Name"]
         revenue = cf_display_by_lic.get(lic, fmt_usd(df.loc[lic, contact_month]))
-        has_saved = lic in _saved_map
+        has_saved = _lic_key(lic) in _logged_lics
         label = f"{'✅ ' if has_saved else ''}#{rank}  {store_name}  ·  {lic}  ·  {revenue}"
         with st.expander(label):
             with st.form(f"store_contact_form_{lic}", clear_on_submit=False):
@@ -2345,9 +2358,10 @@ with tab_contact:
                     except Exception as e:
                         st.error(f"Could not save contact log: {e}")
                     else:
-                        st.success(f"Saved {store_name} to team log.")
+                        st.session_state["contact_log_notice"] = f"Saved {store_name} to team log."
                         if alert_missing_recipient:
-                            st.warning("Alert was not routed because initials were missing or not DK/CH.")
+                            st.session_state["contact_log_warning"] = "Alert was not routed because initials were missing or not DK/CH."
+                        st.rerun()
                 else:
                     st.info("No entry to save for this store.")
 
