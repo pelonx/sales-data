@@ -3371,6 +3371,21 @@ with tab_mom:
         _cm_last  = _today.replace(day=_cal.monthrange(_today.year, _today.month)[1]).date()
         _cm_from_default = max(_ord_min, _cm_first)
         _cm_to_default   = min(_ord_max, _cm_last)
+        if _cm_from_default > _cm_to_default:
+            _latest_order_month_start = _ord_max.replace(day=1)
+            _cm_from_default = max(_ord_min, _latest_order_month_start)
+            _cm_to_default = _ord_max
+        for _mom_key, _mom_default in (("mom_from", _cm_from_default), ("mom_to", _cm_to_default)):
+            _mom_existing = st.session_state.get(_mom_key)
+            try:
+                _mom_outside_range = (
+                    _mom_existing is not None
+                    and (_mom_existing < _ord_min or _mom_existing > _ord_max)
+                )
+            except TypeError:
+                _mom_outside_range = True
+            if _mom_outside_range:
+                st.session_state[_mom_key] = _mom_default
 
         mc1, mc2, mc3, _ = st.columns([2, 1, 1, 2])
         prev_month  = mc1.selectbox("Last month", months, index=_prev_idx, key="mom_base")
