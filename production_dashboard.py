@@ -60,6 +60,11 @@ FACILITY_COLORS = {
     "Block 13": "#4CE89C",
     "B-9":      "#9B6BE8",
 }
+PRODUCT_COLORS = {
+    "A Grade": "#4CE89C",
+    "B Grade": "#4C9BE8",
+    "Trim":    "#E8844C",
+}
 
 # Canonical product names — aliases are collapsed to the canonical form
 PRODUCT_ALIASES = {
@@ -106,6 +111,100 @@ def render_material_ppg_metrics(view_g: pd.DataFrame):
                 f"${item['$/gram']:.2f}/g",
                 fmt_g(item["Grams"]),
             )
+
+def render_ppg_over_time_chart(source_df: pd.DataFrame, key_prefix: str):
+    trend_df = source_df[source_df["Units UOM"] == "Grams"].copy()
+    if trend_df.empty:
+        st.caption("No gram-denominated sales available for PPG trend.")
+        return
+
+    trend_df["Product"] = trend_df["Product"].replace("nan", pd.NA)
+    trend_df["Transfer Day"] = pd.to_datetime(
+        trend_df["Transfer Date"],
+        errors="coerce",
+    ).dt.date
+    trend_df = trend_df.dropna(subset=["Product", "Transfer Day"])
+    if trend_df.empty:
+        st.caption("PPG trend unavailable — Transfer Date not parsed.")
+        return
+
+    facilities = ["All"] + sorted(trend_df["Facility"].dropna().unique().tolist())
+    dates = trend_df["Transfer Day"].dropna()
+    min_date = min(dates)
+    max_date = max(dates)
+
+    c1, c2, c3 = st.columns([2, 1, 1])
+    selected_facility = c1.selectbox(
+        "Facility",
+        facilities,
+        key=f"{key_prefix}_ppg_trend_facility",
+    )
+    from_date = c2.date_input(
+        "From",
+        value=min_date,
+        key=f"{key_prefix}_ppg_trend_from",
+    )
+    to_date = c3.date_input(
+        "To",
+        value=max_date,
+        key=f"{key_prefix}_ppg_trend_to",
+    )
+    start_date, end_date = sorted([from_date, to_date])
+
+    products = sorted(trend_df["Product"].dropna().unique().tolist())
+    selected_products = []
+    toggle_cols = st.columns(min(4, len(products)))
+    for i, product in enumerate(products):
+        if toggle_cols[i % len(toggle_cols)].checkbox(
+            product,
+            value=True,
+            key=f"{key_prefix}_ppg_trend_product_{i}",
+        ):
+            selected_products.append(product)
+
+    filtered = trend_df[
+        trend_df["Transfer Day"].between(start_date, end_date)
+        & trend_df["Product"].isin(selected_products)
+    ].copy()
+    if selected_facility != "All":
+        filtered = filtered[filtered["Facility"] == selected_facility]
+
+    if filtered.empty:
+        st.caption("No PPG trend data for the selected filters.")
+        return
+
+    trend = (
+        filtered.groupby(["Transfer Day", "Product"], as_index=False)
+        .agg(Revenue=("Total", "sum"), Grams=("Units", "sum"))
+    )
+    trend = trend[trend["Grams"] > 0].copy()
+    trend["$/gram"] = trend["Revenue"] / trend["Grams"]
+    trend["Date"] = pd.to_datetime(trend["Transfer Day"])
+    trend = trend.sort_values(["Date", "Product"])
+
+    fig = px.line(
+        trend,
+        x="Date",
+        y="$/gram",
+        color="Product",
+        markers=True,
+        color_discrete_map=PRODUCT_COLORS,
+        hover_data={"Revenue": ":$,.0f", "Grams": ":,.0f", "Date": False},
+    )
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#e3e3d8", height=360,
+        margin=dict(l=0, r=20, t=10, b=10),
+        xaxis_title="", yaxis_title="Avg $/gram",
+        legend_title="Material",
+    )
+    fig.update_yaxes(tickprefix="$")
+    fig.update_traces(
+        hovertemplate="%{x|%b %d, %Y}<br>%{fullData.name}: $%{y:.2f}/g"
+        "<br>Revenue: $%{customdata[0]:,.0f}"
+        "<br>Grams: %{customdata[1]:,.0f}<extra></extra>"
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 def is_brand_vendor(vendor) -> bool:
     return str(vendor or "").strip().casefold() in BRAND_VENDOR_KEYS
@@ -703,6 +802,15 @@ with tab_brand:
 
         st.divider()
 
+        # ── $/gram over time ──────────────────────────────────────────────────
+        st.subheader("PPG Over Time")
+        btrend = named_df.copy()
+        if sel_b_brand != "All":
+            btrend = btrend[btrend["Brand"] == sel_b_brand]
+        render_ppg_over_time_chart(btrend, "brand")
+
+        st.divider()
+
         # ── Monthly revenue trend ──────────────────────────────────────────────
         st.subheader("Monthly Revenue")
         monthly = (
@@ -812,6 +920,15 @@ with tab_wholesale:
             fig_wppg = ppg_band_chart(w_ppg_data, product_col="Product")
             if fig_wppg is not None:
                 st.plotly_chart(fig_wppg, use_container_width=True)
+
+        st.divider()
+
+        # ── $/gram over time ──────────────────────────────────────────────────
+        st.subheader("PPG Over Time")
+        wtrend = ws_df.copy()
+        if sel_w_vendor != "All":
+            wtrend = wtrend[wtrend["Vendor"] == sel_w_vendor]
+        render_ppg_over_time_chart(wtrend, "wholesale")
 
         st.divider()
 
