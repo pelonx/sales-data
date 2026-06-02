@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import requests
 import sqlite3
 import os
+import re
 from datetime import datetime
 from io import StringIO
 from urllib.parse import urlparse
@@ -47,6 +48,7 @@ EXCLUDE_VENDORS = {"CONFIDENCE ANALYTICS"}
 BRANDS_NAMED      = ["K. Savage", "Mayfield", "Leisure Land", "Clout King"]  # shown in Brand Sales tab
 BRANDS_PROD       = BRANDS_NAMED
 BRAND_VENDOR_KEYS = {v.casefold() for v in BRAND_VENDORS}
+EXCLUDE_VENDOR_KEYS = {v.casefold() for v in EXCLUDE_VENDORS}
 
 BRAND_COLORS = {
     "K. Savage":   "#4CE89C",
@@ -86,6 +88,10 @@ def fmt_usd(v):
 def fmt_g(v):
     if v is None or (isinstance(v, float) and pd.isna(v)): return "0 g"
     return f"{v:,.0f} g"
+
+def normalize_vendor_name(vendor) -> str:
+    text = re.sub(r"\s+", " ", str(vendor or "")).strip()
+    return re.sub(r"\s*\(\s*\d+\s*\)\s*$", "", text).strip()
 
 def current_ytd_date_bounds(date_values):
     today = datetime.now().date()
@@ -250,7 +256,10 @@ def render_ppg_over_time_chart(source_df: pd.DataFrame, key_prefix: str):
     st.plotly_chart(fig, width="stretch")
 
 def is_brand_vendor(vendor) -> bool:
-    return str(vendor or "").strip().casefold() in BRAND_VENDOR_KEYS
+    return normalize_vendor_name(vendor).casefold() in BRAND_VENDOR_KEYS
+
+def is_excluded_vendor(vendor) -> bool:
+    return normalize_vendor_name(vendor).casefold() in EXCLUDE_VENDOR_KEYS
 
 def _shade_hex(hex_color: str, factor: float) -> str:
     """factor < 1 darkens toward black; factor > 1 lightens toward white."""
@@ -562,7 +571,7 @@ if not dfs:
     st.stop()
 
 all_df = pd.concat(dfs, ignore_index=True)
-all_df = all_df[~all_df["Vendor"].isin(EXCLUDE_VENDORS)]
+all_df = all_df[~all_df["Vendor"].apply(is_excluded_vendor)].copy()
 all_df["Product"] = all_df["Product"].map(PRODUCT_ALIASES).fillna(all_df["Product"])
 _row_ppg = all_df["Total"].div(all_df["Units"]).where(all_df["Units"] > 0)
 _low_price_a_grade = (
