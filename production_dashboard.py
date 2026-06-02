@@ -87,6 +87,40 @@ def fmt_g(v):
     if v is None or (isinstance(v, float) and pd.isna(v)): return "0 g"
     return f"{v:,.0f} g"
 
+def current_ytd_date_bounds(date_values):
+    today = datetime.now().date()
+    ytd_start = today.replace(month=1, day=1)
+    dates = pd.to_datetime(date_values, errors="coerce").dropna()
+    if dates.empty:
+        return ytd_start, today, ytd_start, today
+    data_min = dates.min().date()
+    data_max = dates.max().date()
+    return min(data_min, ytd_start), max(data_max, today), ytd_start, today
+
+def product_type_multiselect(source_df: pd.DataFrame, key: str) -> list[str]:
+    products = sorted(
+        source_df["Product"].dropna().replace("nan", pd.NA).dropna().unique().tolist()
+    )
+    if not products:
+        return []
+    return st.multiselect(
+        "Product Types",
+        options=products,
+        default=products,
+        key=key,
+    )
+
+def strain_ppg_data(source_df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    if source_df.empty:
+        return pd.DataFrame(columns=[*group_cols, "$/gram"])
+    summary = (
+        source_df.groupby(group_cols, as_index=False)
+        .agg(Revenue=("Total", "sum"), Units=("Units", "sum"))
+    )
+    summary = summary[summary["Units"] > 0].copy()
+    summary["$/gram"] = summary["Revenue"] / summary["Units"]
+    return summary[[*group_cols, "$/gram"]]
+
 def render_material_ppg_metrics(view_g: pd.DataFrame):
     if view_g.empty or not {"Product", "Total", "Units"}.issubset(view_g.columns):
         return
@@ -135,8 +169,7 @@ def render_ppg_over_time_chart(source_df: pd.DataFrame, key_prefix: str):
 
     facilities = ["All"] + sorted(trend_df["Facility"].dropna().unique().tolist())
     dates = trend_df["Transfer Day"].dropna()
-    min_date = min(dates)
-    max_date = max(dates)
+    min_date, max_date, from_default, to_default = current_ytd_date_bounds(dates)
 
     c1, c2, c3 = st.columns([2, 1, 1])
     selected_facility = c1.selectbox(
@@ -146,12 +179,16 @@ def render_ppg_over_time_chart(source_df: pd.DataFrame, key_prefix: str):
     )
     from_date = c2.date_input(
         "From",
-        value=min_date,
+        value=from_default,
+        min_value=min_date,
+        max_value=max_date,
         key=f"{key_prefix}_ppg_trend_from",
     )
     to_date = c3.date_input(
         "To",
-        value=max_date,
+        value=to_default,
+        min_value=min_date,
+        max_value=max_date,
         key=f"{key_prefix}_ppg_trend_to",
     )
     start_date, end_date = sorted([from_date, to_date])
@@ -683,14 +720,12 @@ with tab_brand:
         bf1, bf2, bf3, bf4 = st.columns([2, 2, 1, 1])
         _b_brands = ["All"] + sorted(named_df["Brand"].dropna().unique().tolist())
         _b_types  = ["All"] + sorted(named_df["Product"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
-        _b_dates  = named_df["Transfer Date"].dropna()
-        _b_min = _b_dates.min().date() if not _b_dates.empty else datetime.now().date()
-        _b_max = _b_dates.max().date() if not _b_dates.empty else datetime.now().date()
+        _b_min, _b_max, _b_from_default, _b_to_default = current_ytd_date_bounds(named_df["Transfer Date"])
 
         sel_b_brand = bf1.selectbox("Brand",   _b_brands, key="bs_brand")
         sel_b_type  = bf2.selectbox("Product", _b_types,  key="bs_type")
-        b_from = bf3.date_input("From", value=_b_min, min_value=_b_min, max_value=_b_max, key="bs_from")
-        b_to   = bf4.date_input("To",   value=_b_max, min_value=_b_min, max_value=_b_max, key="bs_to")
+        b_from = bf3.date_input("From", value=_b_from_default, min_value=_b_min, max_value=_b_max, key="bs_from")
+        b_to   = bf4.date_input("To",   value=_b_to_default,   min_value=_b_min, max_value=_b_max, key="bs_to")
 
         bview = named_df.copy()
         if sel_b_brand != "All":
@@ -810,15 +845,15 @@ with tab_brand:
 
         # ── $/gram by strain ───────────────────────────────────────────────────
         st.subheader("$/gram by Strain")
-        ppg_data = (
-            bview_g.groupby(["Strain", "Brand", "Product"])
-            .apply(lambda g: g["Total"].sum() / g["Units"].sum() if g["Units"].sum() > 0 else 0)
-            .reset_index(name="$/gram")
-        )
+        selected_b_ppg_products = product_type_multiselect(bview_g, "brand_ppg_products")
+        b_ppg_view_g = bview_g[bview_g["Product"].isin(selected_b_ppg_products)].copy()
+        ppg_data = strain_ppg_data(b_ppg_view_g, ["Strain", "Brand", "Product"])
         if not ppg_data.empty:
             fig_ppg = ppg_band_chart(ppg_data, product_col="Product", brand_col="Brand")
             if fig_ppg is not None:
                 st.plotly_chart(fig_ppg, width="stretch")
+        else:
+            st.caption("No gram-denominated sales for the selected product types.")
 
         st.divider()
 
@@ -869,14 +904,12 @@ with tab_wholesale:
         wf1, wf2, wf3, wf4 = st.columns([2, 2, 1, 1])
         _w_vendors = ["All"] + sorted(ws_df["Vendor"].dropna().unique().tolist())
         _w_types   = ["All"] + sorted(ws_df["Product"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
-        _w_dates   = ws_df["Transfer Date"].dropna()
-        _w_min = _w_dates.min().date() if not _w_dates.empty else datetime.now().date()
-        _w_max = _w_dates.max().date() if not _w_dates.empty else datetime.now().date()
+        _w_min, _w_max, _w_from_default, _w_to_default = current_ytd_date_bounds(ws_df["Transfer Date"])
 
         sel_w_vendor = wf1.selectbox("Vendor",   _w_vendors, key="ws_vendor")
         sel_w_type   = wf2.selectbox("Product",  _w_types,   key="ws_type")
-        w_from = wf3.date_input("From", value=_w_min, min_value=_w_min, max_value=_w_max, key="ws_from")
-        w_to   = wf4.date_input("To",   value=_w_max, min_value=_w_min, max_value=_w_max, key="ws_to")
+        w_from = wf3.date_input("From", value=_w_from_default, min_value=_w_min, max_value=_w_max, key="ws_from")
+        w_to   = wf4.date_input("To",   value=_w_to_default,   min_value=_w_min, max_value=_w_max, key="ws_to")
 
         wview = ws_df.copy()
         if sel_w_vendor != "All":
@@ -931,15 +964,15 @@ with tab_wholesale:
 
         # ── $/gram by strain ───────────────────────────────────────────────────
         st.subheader("$/gram by Strain")
-        w_ppg_data = (
-            wview_g.groupby(["Strain", "Product"])
-            .apply(lambda g: g["Total"].sum() / g["Units"].sum() if g["Units"].sum() > 0 else 0)
-            .reset_index(name="$/gram")
-        )
+        selected_w_ppg_products = product_type_multiselect(wview_g, "wholesale_ppg_products")
+        w_ppg_view_g = wview_g[wview_g["Product"].isin(selected_w_ppg_products)].copy()
+        w_ppg_data = strain_ppg_data(w_ppg_view_g, ["Strain", "Product"])
         if not w_ppg_data.empty:
             fig_wppg = ppg_band_chart(w_ppg_data, product_col="Product")
             if fig_wppg is not None:
                 st.plotly_chart(fig_wppg, width="stretch")
+        else:
+            st.caption("No gram-denominated sales for the selected product types.")
 
         st.divider()
 
@@ -986,14 +1019,12 @@ with tab_both:
         cf1, cf2, cf3, cf4 = st.columns([2, 2, 1, 1])
         _c_sale_types = ["All"] + sorted(combined_df["Sale Type"].dropna().unique().tolist())
         _c_types = ["All"] + sorted(combined_df["Product"].dropna().replace("nan", pd.NA).dropna().unique().tolist())
-        _c_dates = combined_df["Transfer Date"].dropna()
-        _c_min = _c_dates.min().date() if not _c_dates.empty else datetime.now().date()
-        _c_max = _c_dates.max().date() if not _c_dates.empty else datetime.now().date()
+        _c_min, _c_max, _c_from_default, _c_to_default = current_ytd_date_bounds(combined_df["Transfer Date"])
 
         sel_c_sale_type = cf1.selectbox("Sale Type", _c_sale_types, key="both_sale_type")
         sel_c_type = cf2.selectbox("Product", _c_types, key="both_type")
-        c_from = cf3.date_input("From", value=_c_min, key="both_from")
-        c_to = cf4.date_input("To", value=_c_max, key="both_to")
+        c_from = cf3.date_input("From", value=_c_from_default, min_value=_c_min, max_value=_c_max, key="both_from")
+        c_to = cf4.date_input("To", value=_c_to_default, min_value=_c_min, max_value=_c_max, key="both_to")
 
         cview = combined_df.copy()
         if sel_c_sale_type != "All":
@@ -1093,15 +1124,15 @@ with tab_both:
 
         # ── $/gram by strain ───────────────────────────────────────────────────
         st.subheader("$/gram by Strain")
-        c_ppg_data = (
-            cview_g.groupby(["Strain", "Brand", "Product"])
-            .apply(lambda g: g["Total"].sum() / g["Units"].sum() if g["Units"].sum() > 0 else 0)
-            .reset_index(name="$/gram")
-        )
+        selected_c_ppg_products = product_type_multiselect(cview_g, "both_ppg_products")
+        c_ppg_view_g = cview_g[cview_g["Product"].isin(selected_c_ppg_products)].copy()
+        c_ppg_data = strain_ppg_data(c_ppg_view_g, ["Strain", "Brand", "Product"])
         if not c_ppg_data.empty:
             fig_c_ppg = ppg_band_chart(c_ppg_data, product_col="Product", brand_col="Brand")
             if fig_c_ppg is not None:
                 st.plotly_chart(fig_c_ppg, width="stretch")
+        else:
+            st.caption("No gram-denominated sales for the selected product types.")
 
         st.divider()
 
