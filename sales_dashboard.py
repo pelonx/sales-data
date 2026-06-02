@@ -102,11 +102,17 @@ TERRITORY_MAP_COLORS = {
     "Open Lane - High Priority": "#006D2C",
     "Open Lane - Medium Priority": "#31A354",
     "Open Lane - Low Priority": "#A1D99B",
+    "All Other Retailers": "#9AA0A6",
     "No recent brand": "#6E7781",
     "Needs location": "#A8ADB3",
 }
 TERRITORY_SELECTOR_EXCLUDED_CATEGORIES = {"Needs location"}
-TERRITORY_SELECTOR_ALWAYS_VISIBLE_CATEGORIES = {"K Savage Lapsed", "Leisure Land Placed"}
+TERRITORY_ALL_OTHER_SELECTOR = "All Other Retailers"
+TERRITORY_SELECTOR_ALWAYS_VISIBLE_CATEGORIES = {
+    "K Savage Lapsed",
+    "Leisure Land Placed",
+    TERRITORY_ALL_OTHER_SELECTOR,
+}
 TOTAL_PATTERN = re.compile(
     r"^(total|totals|sum|grand\s*total|ytd|year\s*to\s*date|annual|avg|average|subtotal)s?$",
     re.IGNORECASE,
@@ -3798,11 +3804,24 @@ with tab_territory:
 
         filtered_stores = stores.copy()
         unmapped_mask = filtered_stores["Latitude"].isna() | filtered_stores["Longitude"].isna()
+        all_other_mask = pd.Series(False, index=filtered_stores.index)
         if selected_designations:
-            designation_mask = filtered_stores["Map Category"].isin(selected_designations)
+            regular_designations = [
+                designation for designation in selected_designations
+                if designation != TERRITORY_ALL_OTHER_SELECTOR
+            ]
+            designation_mask = filtered_stores["Map Category"].isin(regular_designations)
+            if TERRITORY_ALL_OTHER_SELECTOR in selected_designations:
+                other_mask = ~filtered_stores["Map Category"].isin(regular_designations)
+                other_mask = other_mask & ~filtered_stores["Map Category"].isin(TERRITORY_SELECTOR_EXCLUDED_CATEGORIES)
+                all_other_mask = other_mask
+                designation_mask = designation_mask | other_mask
             if include_missing:
                 designation_mask = designation_mask | unmapped_mask
-            filtered_stores = filtered_stores[designation_mask]
+            filtered_stores = filtered_stores[designation_mask].copy()
+            all_other_filtered = all_other_mask.reindex(filtered_stores.index, fill_value=False)
+            filtered_stores.loc[all_other_filtered, "Map Category"] = TERRITORY_ALL_OTHER_SELECTOR
+            filtered_stores.loc[all_other_filtered, "Designation"] = TERRITORY_ALL_OTHER_SELECTOR
         elif designation_options:
             filtered_stores = filtered_stores[unmapped_mask] if include_missing else filtered_stores.iloc[0:0]
         if brand_filter != "All":
