@@ -105,6 +105,7 @@ TERRITORY_MAP_COLORS = {
     "No recent brand": "#6E7781",
     "Needs location": "#A8ADB3",
 }
+TERRITORY_SELECTOR_EXCLUDED_CATEGORIES = {"Needs location"}
 TOTAL_PATTERN = re.compile(
     r"^(total|totals|sum|grand\s*total|ytd|year\s*to\s*date|annual|avg|average|subtotal)s?$",
     re.IGNORECASE,
@@ -3674,11 +3675,12 @@ with tab_territory:
         )
 
         category_values = set(stores["Map Category"].dropna().astype(str))
+        selector_category_values = category_values - TERRITORY_SELECTOR_EXCLUDED_CATEGORIES
         designation_options = [
             category for category in TERRITORY_MAP_COLORS
-            if category in category_values
+            if category in selector_category_values
         ]
-        designation_options.extend(sorted(category_values - set(designation_options)))
+        designation_options.extend(sorted(selector_category_values - set(designation_options)))
         selected_designations = []
         if designation_options:
             dot_styles = []
@@ -3718,10 +3720,14 @@ with tab_territory:
                     selected_designations.append(designation)
 
         filtered_stores = stores.copy()
+        unmapped_mask = filtered_stores["Latitude"].isna() | filtered_stores["Longitude"].isna()
         if selected_designations:
-            filtered_stores = filtered_stores[filtered_stores["Map Category"].isin(selected_designations)]
+            designation_mask = filtered_stores["Map Category"].isin(selected_designations)
+            if include_missing:
+                designation_mask = designation_mask | unmapped_mask
+            filtered_stores = filtered_stores[designation_mask]
         elif designation_options:
-            filtered_stores = filtered_stores.iloc[0:0]
+            filtered_stores = filtered_stores[unmapped_mask] if include_missing else filtered_stores.iloc[0:0]
         if brand_filter != "All":
             brand_mask = filtered_stores[f"Carries {brand_filter}"]
             if brand_filter == "Mayfield":
