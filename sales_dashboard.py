@@ -1269,6 +1269,10 @@ def assign_open_lane_priority(stores):
 
 def territory_map_category(row):
     rec = row.get("Recommendation", "")
+    if rec == "Needs location":
+        return "Needs location"
+    if row.get("Carries K. Savage", False):
+        return "Carries K. Savage"
     if rec == "Pitch Mayfield":
         return "Pitch Mayfield"
     if rec == "Mayfield placed":
@@ -1280,12 +1284,8 @@ def territory_map_category(row):
         return f"Open Lane - {priority} Priority"
     if row.get("Carries Mayfield", False):
         return "Carries Mayfield"
-    if row.get("Carries K. Savage", False):
-        return "Carries K. Savage"
     if rec == "K. Savage blocked":
         return "K. Savage blocked"
-    if rec == "Needs location":
-        return "Needs location"
     return "No recent brand"
 
 def enrich_territory_proximity(stores_df, radius_miles):
@@ -3648,6 +3648,26 @@ with tab_territory:
         designation_options.extend(sorted(category_values - set(designation_options)))
         selected_designations = []
         if designation_options:
+            dot_styles = []
+            for designation in designation_options:
+                designation_key = f"territory_designation_{slugify(designation)}"
+                pin_color = TERRITORY_MAP_COLORS.get(designation, "#6E7781")
+                dot_styles.append(f"""
+                  div[class*="st-key-{designation_key}"] [data-testid="stWidgetLabel"] p::before {{
+                    content:"";
+                    display:inline-block;
+                    width:0.65rem;
+                    height:0.65rem;
+                    border-radius:999px;
+                    background:{pin_color};
+                    border:1px solid rgba(255,255,255,0.75);
+                    margin-right:0.45rem;
+                    box-shadow:0 0 0 1px rgba(17,24,39,0.20);
+                    vertical-align:-0.05rem;
+                  }}
+                """)
+            st.markdown(f"<style>{''.join(dot_styles)}</style>", unsafe_allow_html=True)
+
             action_cols = st.columns([1, 1, 4])
             select_all_designations = action_cols[0].button("All", key="territory_designations_all")
             clear_designations = action_cols[1].button("None", key="territory_designations_none")
