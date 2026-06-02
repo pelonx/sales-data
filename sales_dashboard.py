@@ -106,6 +106,7 @@ TERRITORY_MAP_COLORS = {
     "Needs location": "#A8ADB3",
 }
 TERRITORY_SELECTOR_EXCLUDED_CATEGORIES = {"Needs location"}
+TERRITORY_SELECTOR_ALWAYS_VISIBLE_CATEGORIES = {"K Savage Lapsed"}
 TOTAL_PATTERN = re.compile(
     r"^(total|totals|sum|grand\s*total|ytd|year\s*to\s*date|annual|avg|average|subtotal)s?$",
     re.IGNORECASE,
@@ -3675,7 +3676,9 @@ with tab_territory:
         )
 
         category_values = set(stores["Map Category"].dropna().astype(str))
-        selector_category_values = category_values - TERRITORY_SELECTOR_EXCLUDED_CATEGORIES
+        selector_category_values = (
+            category_values | TERRITORY_SELECTOR_ALWAYS_VISIBLE_CATEGORIES
+        ) - TERRITORY_SELECTOR_EXCLUDED_CATEGORIES
         designation_options = [
             category for category in TERRITORY_MAP_COLORS
             if category in selector_category_values
