@@ -2,6 +2,9 @@ const CULTIVERA_SPREADSHEET_ID = '1kY5e6SXd7eQ7GJx-jg6M1R60WCCZ9I_25Eb7ZmuDKHw';
 const CULTIVERA_DATA_SHEET_NAME = 'Cultivera Data';
 const CULTIVERA_SYNC_LOG_SHEET_NAME = 'Cultivera Sync Log';
 const CULTIVERA_EXPORT_URL = 'https://api-wa.cultiverapro.com/api/v1/Orders/export-order-details-to-excel';
+const CULTIVERA_TRANSACTION_STATUS_URL_PREFIX = 'https://api-wa.cultiverapro.com/api/v1/transactions/status/';
+const CULTIVERA_TRANSACTION_POLL_ATTEMPTS = 12;
+const CULTIVERA_TRANSACTION_POLL_SLEEP_MS = 5000;
 
 const CULTIVERA_PROP_TOKEN = 'CULTIVERA_BEARER_TOKEN';
 const CULTIVERA_PROP_PAYLOAD = 'CULTIVERA_EXPORT_PAYLOAD_JSON';
@@ -29,7 +32,8 @@ function testCultiveraExportRequest() {
   const transactionId = transactionIdFromResponse_(response);
   if (transactionId) {
     Logger.log(`Cultivera created async export transaction: ${transactionId}`);
-    Logger.log('Next step: capture the follow-up Network request that uses this TransactionId to download the export file.');
+    const statusResponse = pollCultiveraTransaction_(transactionId);
+    logCultiveraResponse_('Final transaction response', statusResponse);
   }
 }
 
@@ -126,11 +130,12 @@ function responseToSheetValues_(response) {
   if (contentType.includes('json')) {
     const json = JSON.parse(response.getContentText());
     const transactionId = transactionIdFromJson_(json);
-    if (transactionId) {
-      throw new Error(
-        `Cultivera returned async export TransactionId ${transactionId}, not order rows yet. ` +
-        'Capture the follow-up download/status request from DevTools Network and add it to this script.'
-      );
+    if (transactionId && isTransactionStartJson_(json)) {
+      return responseToSheetValues_(pollCultiveraTransaction_(transactionId));
+    }
+    const downloadUrl = downloadUrlFromJson_(json);
+    if (downloadUrl) {
+      return responseToSheetValues_(fetchCultiveraDownloadUrl_(downloadUrl));
     }
     return jsonToSheetValues_(json);
   }
@@ -150,6 +155,188 @@ function transactionIdFromResponse_(response) {
 
 function transactionIdFromJson_(json) {
   return String((json && (json.TransactionId || json.transactionId || json.transactionID)) || '').trim();
+}
+
+function isTransactionStartJson_(json) {
+  if (!transactionIdFromJson_(json)) {
+    return false;
+  }
+  const keys = Object.keys(json || {});
+  return keys.length === 1 || !keys.some(key => /status|state|complete|done|result|download|file|url|uri/i.test(key));
+}
+
+function fetchCultiveraTransactionStatus_(transactionId) {
+  const props = PropertiesService.getScriptProperties();
+  const token = props.getProperty(CULTIVERA_PROP_TOKEN);
+  if (!token) {
+    throw new Error(`Missing Script Property: ${CULTIVERA_PROP_TOKEN}`);
+  }
+
+  const response = UrlFetchApp.fetch(
+    CULTIVERA_TRANSACTION_STATUS_URL_PREFIX + encodeURIComponent(transactionId),
+    {
+      method: 'get',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json, text/plain, */*',
+        Origin: 'https://wa.cultiverapro.com',
+        Referer: 'https://wa.cultiverapro.com/',
+        'x-rts': Math.floor(Date.now() / 1000).toString(),
+        'x-tzo': props.getProperty(CULTIVERA_PROP_TZO) || '-420'
+      },
+      muteHttpExceptions: true
+    }
+  );
+
+  const status = response.getResponseCode();
+  if (status < 200 || status >= 300) {
+    throw new Error(`Cultivera transaction status failed with HTTP ${status}: ${safeTextPreview_(response, 500)}`);
+  }
+  return response;
+}
+
+function pollCultiveraTransaction_(transactionId) {
+  let lastResponse = null;
+  for (let attempt = 1; attempt <= CULTIVERA_TRANSACTION_POLL_ATTEMPTS; attempt++) {
+    lastResponse = fetchCultiveraTransactionStatus_(transactionId);
+    const info = transactionStatusInfo_(lastResponse);
+    Logger.log(
+      `Transaction ${transactionId} attempt ${attempt}/${CULTIVERA_TRANSACTION_POLL_ATTEMPTS}: ` +
+      `${info.status || 'unknown'} · ${safeTextPreview_(lastResponse, 300)}`
+    );
+
+    if (info.failed) {
+      throw new Error(`Cultivera export transaction ${transactionId} failed: ${safeTextPreview_(lastResponse, 500)}`);
+    }
+    if (info.downloadUrl) {
+      return fetchCultiveraDownloadUrl_(info.downloadUrl);
+    }
+    if (info.done) {
+      return lastResponse;
+    }
+    Utilities.sleep(CULTIVERA_TRANSACTION_POLL_SLEEP_MS);
+  }
+
+  throw new Error(
+    `Cultivera export transaction ${transactionId} did not complete after ` +
+    `${CULTIVERA_TRANSACTION_POLL_ATTEMPTS} attempts. Last response: ${safeTextPreview_(lastResponse, 500)}`
+  );
+}
+
+function transactionStatusInfo_(response) {
+  const info = {
+    status: '',
+    done: false,
+    failed: false,
+    downloadUrl: ''
+  };
+  const contentType = String(
+    headerValue_(response.getAllHeaders(), 'Content-Type') ||
+    headerValue_(response.getAllHeaders(), 'content-type') ||
+    ''
+  ).toLowerCase();
+
+  if (!contentType.includes('json')) {
+    info.done = true;
+    return info;
+  }
+
+  try {
+    const json = JSON.parse(response.getContentText());
+    info.status = String(
+      json.Status || json.status ||
+      json.State || json.state ||
+      json.TransactionStatus || json.transactionStatus ||
+      ''
+    );
+    const lowerStatus = info.status.toLowerCase();
+    info.failed = (
+      Boolean(json.Failed || json.failed || json.HasError || json.hasError) ||
+      /fail|error|cancel/.test(lowerStatus)
+    );
+    info.done = (
+      Boolean(json.IsComplete || json.isComplete || json.Completed || json.completed || json.Done || json.done) ||
+      /complete|completed|success|succeeded|done|finished/.test(lowerStatus)
+    );
+    info.downloadUrl = downloadUrlFromJson_(json);
+  } catch (err) {
+    info.done = false;
+  }
+  return info;
+}
+
+function downloadUrlFromJson_(json) {
+  const url = firstStringByKeyPattern_(json, /download|file|url|uri|href/i);
+  if (!url) {
+    return '';
+  }
+  if (/^https?:\/\//i.test(url)) {
+    return url;
+  }
+  if (url.startsWith('/')) {
+    return 'https://api-wa.cultiverapro.com' + url;
+  }
+  return '';
+}
+
+function firstStringByKeyPattern_(value, pattern) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = firstStringByKeyPattern_(item, pattern);
+      if (found) {
+        return found;
+      }
+    }
+    return '';
+  }
+  if (typeof value !== 'object') {
+    return '';
+  }
+  for (const key of Object.keys(value)) {
+    const child = value[key];
+    if (pattern.test(key) && typeof child === 'string' && child.trim()) {
+      return child.trim();
+    }
+    const found = firstStringByKeyPattern_(child, pattern);
+    if (found) {
+      return found;
+    }
+  }
+  return '';
+}
+
+function fetchCultiveraDownloadUrl_(url) {
+  const props = PropertiesService.getScriptProperties();
+  const token = props.getProperty(CULTIVERA_PROP_TOKEN);
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json, text/plain, */*',
+      Origin: 'https://wa.cultiverapro.com',
+      Referer: 'https://wa.cultiverapro.com/',
+      'x-rts': Math.floor(Date.now() / 1000).toString(),
+      'x-tzo': props.getProperty(CULTIVERA_PROP_TZO) || '-420'
+    },
+    muteHttpExceptions: true
+  });
+  const status = response.getResponseCode();
+  if (status < 200 || status >= 300) {
+    throw new Error(`Cultivera download failed with HTTP ${status}: ${safeTextPreview_(response, 500)}`);
+  }
+  return response;
+}
+
+function logCultiveraResponse_(label, response) {
+  const headers = response.getAllHeaders();
+  Logger.log(`${label} HTTP status: ${response.getResponseCode()}`);
+  Logger.log(`${label} Content-Type: ${headerValue_(headers, 'Content-Type') || headerValue_(headers, 'content-type') || ''}`);
+  Logger.log(`${label} Content-Disposition: ${headerValue_(headers, 'Content-Disposition') || headerValue_(headers, 'content-disposition') || ''}`);
+  Logger.log(`${label} Body bytes: ${response.getBlob().getBytes().length}`);
+  Logger.log(`${label} Body preview: ${safeTextPreview_(response, 500)}`);
 }
 
 function excelBlobToSheetValues_(blob) {
