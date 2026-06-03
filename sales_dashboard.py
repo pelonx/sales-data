@@ -1860,6 +1860,63 @@ def route_waypoint_coords(waypoint_rows):
             coords.append((float(row["Latitude"]), float(row["Longitude"])))
     return tuple(coords[:9])
 
+def route_projection_value(row, start_coords, destination_coords):
+    start_lat, start_lng = start_coords
+    dest_lat, dest_lng = destination_coords
+    lat = float(row["Latitude"])
+    lng = float(row["Longitude"])
+    avg_lat = math.radians((start_lat + dest_lat) / 2)
+    scale = math.cos(avg_lat) or 1
+    start_x, start_y = start_lng * scale, start_lat
+    dest_x, dest_y = dest_lng * scale, dest_lat
+    point_x, point_y = lng * scale, lat
+    vec_x, vec_y = dest_x - start_x, dest_y - start_y
+    denom = vec_x * vec_x + vec_y * vec_y
+    if denom == 0:
+        return haversine_miles(start_lat, start_lng, lat, lng)
+    return ((point_x - start_x) * vec_x + (point_y - start_y) * vec_y) / denom
+
+def order_route_waypoint_rows(waypoint_rows, start_coords=None, destination_coords=None):
+    if waypoint_rows is None or waypoint_rows.empty:
+        return pd.DataFrame()
+
+    ordered = waypoint_rows.copy()
+    if start_coords and destination_coords:
+        ordered["_route_order"] = ordered.apply(
+            lambda row: route_projection_value(row, start_coords, destination_coords),
+            axis=1,
+        )
+        ordered["_route_start_miles"] = ordered.apply(
+            lambda row: haversine_miles(
+                start_coords[0],
+                start_coords[1],
+                row["Latitude"],
+                row["Longitude"],
+            ),
+            axis=1,
+        )
+        return (
+            ordered.sort_values(["_route_order", "_route_start_miles"])
+            .drop(columns=["_route_order", "_route_start_miles"], errors="ignore")
+        )
+
+    if start_coords:
+        remaining = ordered.copy()
+        selected_indices = []
+        current = start_coords
+        while not remaining.empty:
+            distances = remaining.apply(
+                lambda row: haversine_miles(current[0], current[1], row["Latitude"], row["Longitude"]),
+                axis=1,
+            )
+            next_idx = distances.idxmin()
+            selected_indices.append(next_idx)
+            current = (float(remaining.loc[next_idx, "Latitude"]), float(remaining.loc[next_idx, "Longitude"]))
+            remaining = remaining.drop(index=next_idx)
+        return ordered.loc[selected_indices]
+
+    return ordered
+
 def route_map_overlay(origin_endpoint, destination_endpoint, waypoint_rows):
     if not origin_endpoint or not destination_endpoint:
         return None
@@ -4616,27 +4673,42 @@ with tab_territory:
             if route_candidates.empty:
                 st.info("No mapped route candidates match the current filters.")
             else:
+                route_max_stops_int = int(route_max_stops)
                 route_options = route_candidates.head(25).copy()
                 route_option_indices = route_options.index.tolist()
                 route_selection_key = "territory_route_selected_stops"
-                if route_selection_key in st.session_state:
-                    st.session_state[route_selection_key] = [
-                        idx for idx in st.session_state[route_selection_key]
-                        if idx in route_option_indices
-                    ]
-                    default_route_indices = None
+                route_stop_count_key = "territory_route_selected_stop_count"
+                route_option_signature_key = "territory_route_option_signature"
+                route_option_signature = tuple(route_option_indices)
+                current_selection = st.session_state.get(route_selection_key)
+                should_auto_select = (
+                    current_selection is None
+                    or st.session_state.get(route_stop_count_key) != route_max_stops_int
+                    or st.session_state.get(route_option_signature_key) != route_option_signature
+                )
+                if should_auto_select:
+                    st.session_state[route_selection_key] = route_option_indices[:route_max_stops_int]
                 else:
-                    default_route_indices = route_option_indices[: int(route_max_stops)]
+                    st.session_state[route_selection_key] = [
+                        idx for idx in current_selection
+                        if idx in route_option_indices
+                    ][:route_max_stops_int]
+                st.session_state[route_stop_count_key] = route_max_stops_int
+                st.session_state[route_option_signature_key] = route_option_signature
                 selected_route_indices = st.multiselect(
                     "Stops",
                     route_option_indices,
-                    default=default_route_indices,
                     format_func=lambda idx: territory_route_option_label(route_options.loc[idx]),
                     key=route_selection_key,
                 )
                 selected_route_rows = route_options.loc[
                     [idx for idx in route_option_indices if idx in selected_route_indices]
-                ].head(9)
+                ].head(min(9, route_max_stops_int))
+                selected_route_rows = order_route_waypoint_rows(
+                    selected_route_rows,
+                    start_coords=route_start_coords,
+                    destination_coords=route_destination_coords,
+                )
                 trip_summary = route_trip_summary(
                     route_start_endpoint,
                     route_destination_endpoint,
