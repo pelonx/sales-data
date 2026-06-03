@@ -1664,7 +1664,7 @@ def route_store_match_label(row):
         parts.append(city)
     return " - ".join(parts)
 
-def route_endpoint_from_coords(label, coords, source):
+def route_endpoint_from_coords(label, coords, source, category="", license_number=""):
     if not coords:
         return None
     lat, lng = coords
@@ -1674,6 +1674,8 @@ def route_endpoint_from_coords(label, coords, source):
         "label": label,
         "maps_value": maps_value,
         "source": source,
+        "category": category,
+        "license": license_number,
     }
 
 def route_endpoint_from_store(row):
@@ -1681,7 +1683,15 @@ def route_endpoint_from_store(row):
     lng = _coerce_coord(row.get("Longitude"))
     if pd.isna(lat) or pd.isna(lng):
         return None
-    return route_endpoint_from_coords(route_store_match_label(row), (lat, lng), "store")
+    category = str(row.get("Map Category", "") or row.get("Designation", "") or "")
+    license_number = str(row.get("License", "") or "")
+    return route_endpoint_from_coords(
+        route_store_match_label(row),
+        (lat, lng),
+        "store",
+        category=category,
+        license_number=license_number,
+    )
 
 def route_endpoint_from_text(query, api_key):
     text = str(query or "").strip()
@@ -1828,22 +1838,25 @@ def territory_route_option_label(row):
         parts.append(fmt_usd(market_sales))
     return " · ".join(parts)
 
-def google_maps_route_url(origin, destination, waypoint_rows):
+def google_maps_route_url(origin, destination, waypoint_rows, round_trip=False):
+    origin_text = str(origin or "").strip()
+    destination_text = str(destination or "").strip()
+    waypoint_values = route_waypoint_values(waypoint_rows)
+    if round_trip and origin_text:
+        final_destination = origin_text
+        waypoint_values = (*waypoint_values, destination_text) if destination_text else waypoint_values
+    else:
+        final_destination = destination_text
+
     params = {
         "api": "1",
         "travelmode": "driving",
-        "destination": str(destination or "").strip(),
+        "destination": final_destination,
     }
-    origin_text = str(origin or "").strip()
     if origin_text:
         params["origin"] = origin_text
-    waypoints = [
-        f"{float(row['Latitude']):.6f},{float(row['Longitude']):.6f}"
-        for _, row in waypoint_rows.iterrows()
-        if pd.notna(row.get("Latitude")) and pd.notna(row.get("Longitude"))
-    ]
-    if waypoints:
-        params["waypoints"] = "|".join(waypoints[:9])
+    if waypoint_values:
+        params["waypoints"] = "|".join(waypoint_values[:10])
     return "https://www.google.com/maps/dir/?" + urlencode(params, safe="|,")
 
 def route_waypoint_values(waypoint_rows):
@@ -1917,42 +1930,84 @@ def order_route_waypoint_rows(waypoint_rows, start_coords=None, destination_coor
 
     return ordered
 
-def route_map_overlay(origin_endpoint, destination_endpoint, waypoint_rows):
+def route_directions_waypoint_values(destination_endpoint, waypoint_rows, round_trip=False):
+    waypoint_values = route_waypoint_values(waypoint_rows)
+    if round_trip and destination_endpoint and destination_endpoint.get("maps_value"):
+        return (*waypoint_values, destination_endpoint["maps_value"])
+    return waypoint_values
+
+def route_map_overlay(origin_endpoint, destination_endpoint, waypoint_rows, round_trip=True):
     if not origin_endpoint or not destination_endpoint:
         return None
 
     path = []
+    markers = []
     if origin_endpoint.get("coords"):
         lat, lng = origin_endpoint["coords"]
-        path.append({"lat": float(lat), "lng": float(lng), "label": "Start"})
-    for idx, (lat, lng) in enumerate(route_waypoint_coords(waypoint_rows), start=1):
-        path.append({"lat": float(lat), "lng": float(lng), "label": f"Stop {idx}"})
+        start_point = {
+            "lat": float(lat),
+            "lng": float(lng),
+            "label": "Start",
+            "title": origin_endpoint.get("label", "Start"),
+            "category": origin_endpoint.get("category", "Start") or "Start",
+            "license": origin_endpoint.get("license", ""),
+        }
+        path.append(start_point)
+        markers.append(start_point)
+    for idx, (_, row) in enumerate(waypoint_rows.iterrows(), start=1):
+        if pd.isna(row.get("Latitude")) or pd.isna(row.get("Longitude")):
+            continue
+        stop_point = {
+            "lat": float(row["Latitude"]),
+            "lng": float(row["Longitude"]),
+            "label": f"Stop {idx}",
+            "title": str(row.get("Store Name", "") or f"Stop {idx}"),
+            "category": str(row.get("Map Category", "") or row.get("Designation", "") or ""),
+            "license": str(row.get("License", "") or ""),
+        }
+        path.append(stop_point)
+        markers.append(stop_point)
     if destination_endpoint.get("coords"):
         lat, lng = destination_endpoint["coords"]
-        path.append({"lat": float(lat), "lng": float(lng), "label": "Destination"})
+        destination_point = {
+            "lat": float(lat),
+            "lng": float(lng),
+            "label": "Destination",
+            "title": destination_endpoint.get("label", "Destination"),
+            "category": destination_endpoint.get("category", "Destination") or "Destination",
+            "license": destination_endpoint.get("license", ""),
+        }
+        path.append(destination_point)
+        markers.append(destination_point)
+    if round_trip and path:
+        path.append(path[0])
 
     return {
         "origin": origin_endpoint.get("maps_value", ""),
-        "destination": destination_endpoint.get("maps_value", ""),
-        "waypoints": list(route_waypoint_values(waypoint_rows)),
+        "destination": origin_endpoint.get("maps_value", "") if round_trip else destination_endpoint.get("maps_value", ""),
+        "waypoints": list(route_directions_waypoint_values(destination_endpoint, waypoint_rows, round_trip=round_trip)),
         "path": path,
+        "markers": markers,
+        "roundTrip": bool(round_trip),
     }
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def google_directions_summary(origin, destination, waypoints, api_key):
+def google_directions_summary(origin, destination, waypoints, api_key, round_trip=False):
     if not api_key or not origin or not destination:
         return None
 
     import requests as _req
 
+    directions_destination = origin if round_trip else destination
+    directions_waypoints = (*waypoints, destination) if round_trip else waypoints
     params = {
         "origin": origin,
-        "destination": destination,
+        "destination": directions_destination,
         "mode": "driving",
         "key": api_key,
     }
-    if waypoints:
-        params["waypoints"] = "|".join(waypoints[:9])
+    if directions_waypoints:
+        params["waypoints"] = "|".join(directions_waypoints[:10])
 
     try:
         resp = _req.get(
@@ -1977,10 +2032,12 @@ def google_directions_summary(origin, destination, waypoints, api_key):
         "source": "Google Directions",
     }
 
-def approximate_route_summary(start_coords, destination_coords, waypoint_coords):
+def approximate_route_summary(start_coords, destination_coords, waypoint_coords, round_trip=False):
     if not start_coords or not destination_coords:
         return None
     points = [start_coords, *waypoint_coords, destination_coords]
+    if round_trip:
+        points.append(start_coords)
     if len(points) < 2:
         return None
     straight_miles = sum(
@@ -1994,7 +2051,7 @@ def approximate_route_summary(start_coords, destination_coords, waypoint_coords)
         "source": "Estimated",
     }
 
-def route_trip_summary(origin_endpoint, destination_endpoint, waypoint_rows, api_key):
+def route_trip_summary(origin_endpoint, destination_endpoint, waypoint_rows, api_key, round_trip=True):
     if not origin_endpoint or not destination_endpoint:
         return None
 
@@ -2004,6 +2061,7 @@ def route_trip_summary(origin_endpoint, destination_endpoint, waypoint_rows, api
         destination_endpoint.get("maps_value"),
         waypoint_values,
         api_key,
+        round_trip=round_trip,
     )
     if google_summary:
         return google_summary
@@ -2012,6 +2070,7 @@ def route_trip_summary(origin_endpoint, destination_endpoint, waypoint_rows, api
         origin_endpoint.get("coords"),
         destination_endpoint.get("coords"),
         route_waypoint_coords(waypoint_rows),
+        round_trip=round_trip,
     )
 
 def format_drive_minutes(minutes):
@@ -2161,6 +2220,37 @@ def render_google_territory_map(map_df, route_overlay=None, height=540):
         path.forEach((position) => bounds.extend(position));
         return true;
       }}
+      function routeMarkerLabel(index) {{
+        const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        return alphabet[index] || String(index + 1);
+      }}
+      function drawRouteMarkers(map, bounds, info) {{
+        const routeMarkers = territoryRoute.markers || [];
+        routeMarkers.forEach((point, index) => {{
+          const marker = new google.maps.Marker({{
+            position: {{lat: point.lat, lng: point.lng}},
+            map,
+            title: point.title || point.label || "Route stop",
+            label: {{
+              text: routeMarkerLabel(index),
+              color: "#FFFFFF",
+              fontWeight: "700"
+            }}
+          }});
+          marker.addListener("click", () => {{
+            info.setContent(`
+              <div style="font-family:Arial,sans-serif;max-width:260px">
+                <div style="font-weight:700;margin-bottom:4px">${{esc(point.title || point.label || "Route stop")}}</div>
+                <div>Route pin: <b>${{esc(routeMarkerLabel(index))}}</b> · ${{esc(point.label || "")}}</div>
+                ${{point.category ? `<div>Designation: <b>${{esc(point.category)}}</b></div>` : ""}}
+                ${{point.license ? `<div>License: ${{esc(point.license)}}</div>` : ""}}
+              </div>
+            `);
+            info.open(map, marker);
+          }});
+          bounds.extend(marker.getPosition());
+        }});
+      }}
       function initTerritoryMap() {{
         const map = new google.maps.Map(document.getElementById("territory-map"), {{
           center: {{lat: territoryPoints[0].lat, lng: territoryPoints[0].lng}},
@@ -2211,7 +2301,7 @@ def render_google_territory_map(map_df, route_overlay=None, height=540):
           const directionsService = new google.maps.DirectionsService();
           const directionsRenderer = new google.maps.DirectionsRenderer({{
             map,
-            suppressMarkers: false,
+            suppressMarkers: true,
             preserveViewport: false,
             polylineOptions: {{
               strokeColor: "#35A7FF",
@@ -2238,6 +2328,7 @@ def render_google_territory_map(map_df, route_overlay=None, height=540):
         }} else {{
           hasFallbackRoute = drawFallbackRoute(map, bounds);
         }}
+        drawRouteMarkers(map, bounds, info);
         if (!hasFallbackRoute && (territoryRoute.path || []).length > 1) {{
           (territoryRoute.path || []).forEach((point) => bounds.extend({{lat: point.lat, lng: point.lng}}));
         }}
@@ -2292,6 +2383,10 @@ def render_plotly_territory_map(map_df, route_overlay=None):
     fig.update_traces(marker=dict(size=11, opacity=0.9))
     route_path = (route_overlay or {}).get("path", [])
     if len(route_path) > 1:
+        route_marker_text = [
+            f"{point.get('title', point.get('label', 'Route stop'))}<br>{point.get('category', '')}"
+            for point in route_path
+        ]
         fig.add_trace(
             go.Scattermapbox(
                 lat=[point["lat"] for point in route_path],
@@ -2300,7 +2395,8 @@ def render_plotly_territory_map(map_df, route_overlay=None):
                 name="Route",
                 line=dict(color="#35A7FF", width=4),
                 marker=dict(size=8, color="#F7F8FA"),
-                hoverinfo="skip",
+                text=route_marker_text,
+                hovertemplate="%{text}<extra></extra>",
             )
         )
     fig.update_layout(
@@ -4719,11 +4815,11 @@ with tab_territory:
                 route_summary_cols = st.columns(5)
                 route_summary_cols[0].metric("Candidates", f"{len(route_candidates):,}")
                 route_summary_cols[1].metric("Selected Stops", f"{len(selected_route_rows):,}")
-                miles_label = "Trip Miles"
-                time_label = "Drive Time"
+                miles_label = "Round Trip Miles"
+                time_label = "Round Trip Drive"
                 if trip_summary and trip_summary.get("source") == "Estimated":
-                    miles_label = "Trip Miles Est."
-                    time_label = "Drive Time Est."
+                    miles_label = "Round Trip Miles Est."
+                    time_label = "Round Trip Drive Est."
                 route_summary_cols[2].metric(
                     miles_label,
                     format_route_miles(trip_summary.get("distance_miles") if trip_summary else None),
@@ -4781,6 +4877,7 @@ with tab_territory:
                             route_start_endpoint.get("maps_value") if route_start_endpoint else route_start,
                             route_destination_endpoint.get("maps_value") if route_destination_endpoint else route_destination,
                             selected_route_rows,
+                            round_trip=True,
                         ),
                         width="stretch",
                     )
