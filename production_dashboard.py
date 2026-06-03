@@ -67,6 +67,33 @@ PRODUCT_COLORS = {
     "B Grade": "#4C9BE8",
     "Trim":    "#E8844C",
 }
+DEFAULT_COSTS_GID = "154377878"
+COST_SUMMARY_COLUMNS = [
+    "Total Income",
+    "Total Cost of Goods Sold",
+    "Gross Profit",
+    "Total Expenses",
+    "Net Operating Income",
+    "Total Other Income / Expenses",
+    "Net Income",
+]
+COST_SECTION_COLUMNS = {
+    "Income",
+    "Cost of Goods Sold",
+    "601 Direct Costs",
+    "620 Direct Labor",
+    "640 Inventory Compliance",
+    "660 Overhead",
+    "680 Supplies & Materials",
+    "Expenses",
+    "Other Income / Expenses",
+}
+COST_TREND_COLUMNS = [
+    "Total Income",
+    "Total Cost of Goods Sold",
+    "Total Expenses",
+    "Net Income",
+]
 
 # Canonical product names — aliases are collapsed to the canonical form
 PRODUCT_ALIASES = {
@@ -89,9 +116,30 @@ def fmt_g(v):
     if v is None or (isinstance(v, float) and pd.isna(v)): return "0 g"
     return f"{v:,.0f} g"
 
+def pct_value(n, t):
+    return n / t * 100 if t else 0.0
+
 def normalize_vendor_name(vendor) -> str:
     text = re.sub(r"\s+", " ", str(vendor or "")).strip()
     return re.sub(r"\s*\(\s*\d+\s*\)\s*$", "", text).strip()
+
+def clean_currency_value(value):
+    text = str(value or "").strip()
+    if text.lower() in {"", "nan", "none", "$ -", "-", "—"}:
+        return 0.0
+    negative_parentheses = bool(re.fullmatch(r"\(.*\)", text))
+    cleaned = re.sub(r"[\$,]", "", text)
+    cleaned = re.sub(r"^\((.*)\)$", r"\1", cleaned).strip()
+    if cleaned in {"", "-", "—"}:
+        return 0.0
+    try:
+        amount = float(cleaned)
+    except ValueError:
+        return 0.0
+    return -abs(amount) if negative_parentheses else amount
+
+def clean_currency_series(series: pd.Series) -> pd.Series:
+    return series.apply(clean_currency_value)
 
 def current_ytd_date_bounds(date_values):
     today = datetime.now().date()
@@ -126,6 +174,235 @@ def strain_ppg_data(source_df: pd.DataFrame, group_cols: list[str]) -> pd.DataFr
     summary = summary[summary["Units"] > 0].copy()
     summary["$/gram"] = summary["Revenue"] / summary["Units"]
     return summary[[*group_cols, "$/gram"]]
+
+def parse_costs_tab(raw: pd.DataFrame) -> pd.DataFrame:
+    costs = raw.copy()
+    costs.columns = [str(c).strip() for c in costs.columns]
+    if "Month" not in costs.columns or "Company" not in costs.columns:
+        raise ValueError("Costs tab must include Month and Company columns.")
+
+    costs = costs.dropna(how="all").copy()
+    costs["Month"] = costs["Month"].astype(str).str.strip()
+    costs["Company"] = costs["Company"].astype(str).str.strip()
+    costs = costs[
+        costs["Month"].ne("")
+        & costs["Company"].ne("")
+        & costs["Month"].str.lower().ne("nan")
+        & costs["Company"].str.lower().ne("nan")
+    ].copy()
+    costs["Statement Month"] = pd.to_datetime(
+        costs["Month"],
+        format="%b-%y",
+        errors="coerce",
+    )
+
+    for col in costs.columns:
+        if col not in {"Month", "Company", "Statement Month"}:
+            costs[col] = clean_currency_series(costs[col])
+    return costs
+
+def columns_between(columns: list[str], start: str, end: str) -> list[str]:
+    try:
+        start_i = columns.index(start)
+        end_i = columns.index(end)
+    except ValueError:
+        return []
+    if end_i <= start_i:
+        return []
+    return columns[start_i + 1:end_i]
+
+def cost_detail_columns(costs_df: pd.DataFrame) -> tuple[list[str], list[str]]:
+    columns = list(costs_df.columns)
+    cogs_cols = columns_between(columns, "Cost of Goods Sold", "Total Cost of Goods Sold")
+    expense_cols = columns_between(columns, "Expenses", "Total Expenses")
+
+    def detail_only(cols):
+        return [
+            col for col in cols
+            if col not in COST_SECTION_COLUMNS and not col.startswith("Total ")
+        ]
+
+    return detail_only(cogs_cols), detail_only(expense_cols)
+
+def cost_detail_summary(costs_view: pd.DataFrame, columns: list[str], cost_type: str) -> pd.DataFrame:
+    available = [col for col in columns if col in costs_view.columns]
+    if costs_view.empty or not available:
+        return pd.DataFrame(columns=["Cost Type", "Line Item", "Amount"])
+    detail = (
+        costs_view[available]
+        .sum()
+        .reset_index()
+        .rename(columns={"index": "Line Item", 0: "Amount"})
+    )
+    detail["Cost Type"] = cost_type
+    detail = detail[detail["Amount"].abs() > 0].copy()
+    return detail[["Cost Type", "Line Item", "Amount"]]
+
+def render_costs_tab(costs_df: pd.DataFrame, costs_error: str = ""):
+    if costs_error:
+        st.error(costs_error)
+        return
+    if costs_df.empty:
+        st.info("No costs data loaded.")
+        return
+
+    valid_months = costs_df["Statement Month"].dropna()
+    if valid_months.empty:
+        st.warning("Costs data loaded, but Month values could not be parsed.")
+        return
+
+    c1, c2, c3 = st.columns([2, 1, 1])
+    companies = sorted(costs_df["Company"].dropna().unique().tolist())
+    selected_companies = c1.multiselect(
+        "Company",
+        companies,
+        default=companies,
+        key="cost_company",
+    )
+    min_date, max_date, from_default, to_default = current_ytd_date_bounds(valid_months)
+    from_date = c2.date_input(
+        "From",
+        value=from_default,
+        min_value=min_date,
+        max_value=max_date,
+        key="cost_from",
+    )
+    to_date = c3.date_input(
+        "To",
+        value=to_default,
+        min_value=min_date,
+        max_value=max_date,
+        key="cost_to",
+    )
+    start_date, end_date = sorted([from_date, to_date])
+
+    costs_view = costs_df[
+        costs_df["Company"].isin(selected_companies)
+        & costs_df["Statement Month"].dt.date.between(start_date, end_date).fillna(False)
+    ].copy()
+    if costs_view.empty:
+        st.caption("No costs data for the selected filters.")
+        return
+
+    income = costs_view.get("Total Income", pd.Series(dtype=float)).sum()
+    cogs = costs_view.get("Total Cost of Goods Sold", pd.Series(dtype=float)).sum()
+    gross_profit = costs_view.get("Gross Profit", pd.Series(dtype=float)).sum()
+    expenses = costs_view.get("Total Expenses", pd.Series(dtype=float)).sum()
+    net_income = costs_view.get("Net Income", pd.Series(dtype=float)).sum()
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total Income", fmt_usd(income))
+    k2.metric("COGS", fmt_usd(cogs), f"{pct_value(cogs, income):.1f}% of income")
+    k3.metric("Gross Profit", fmt_usd(gross_profit), f"{pct_value(gross_profit, income):.1f}% margin")
+    k4.metric("Expenses", fmt_usd(expenses), f"{pct_value(expenses, income):.1f}% of income")
+    k5.metric("Net Income", fmt_usd(net_income), f"{pct_value(net_income, income):.1f}% margin")
+
+    st.divider()
+
+    st.subheader("Monthly Performance")
+    trend_cols = [col for col in COST_TREND_COLUMNS if col in costs_view.columns]
+    monthly = (
+        costs_view.groupby("Statement Month", as_index=False)[trend_cols]
+        .sum()
+        .sort_values("Statement Month")
+    )
+    trend = monthly.melt(
+        id_vars="Statement Month",
+        value_vars=trend_cols,
+        var_name="Metric",
+        value_name="Amount",
+    )
+    if not trend.empty:
+        fig = px.line(
+            trend,
+            x="Statement Month",
+            y="Amount",
+            color="Metric",
+            markers=True,
+        )
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font_color="#e3e3d8", height=360,
+            margin=dict(l=0, r=20, t=10, b=10),
+            xaxis_title="", yaxis_title="Amount",
+            legend_title="Metric",
+        )
+        fig.update_yaxes(tickprefix="$")
+        fig.update_xaxes(tickformat="%b %Y")
+        fig.update_traces(
+            hovertemplate="%{x|%b %Y}<br>%{fullData.name}: $%{y:,.0f}<extra></extra>"
+        )
+        st.plotly_chart(fig, width="stretch")
+
+    st.divider()
+
+    cogs_cols, expense_cols = cost_detail_columns(costs_df)
+    detail = pd.concat(
+        [
+            cost_detail_summary(costs_view, cogs_cols, "COGS"),
+            cost_detail_summary(costs_view, expense_cols, "Expenses"),
+        ],
+        ignore_index=True,
+    )
+    detail = detail.sort_values("Amount", ascending=False)
+    st.subheader("Top Cost Lines")
+    if not detail.empty:
+        top_detail = detail.head(15).sort_values("Amount", ascending=True)
+        fig_costs = px.bar(
+            top_detail,
+            x="Amount",
+            y="Line Item",
+            color="Cost Type",
+            orientation="h",
+            text=top_detail["Amount"].apply(fmt_usd),
+            color_discrete_map={"COGS": "#4C9BE8", "Expenses": "#E8844C"},
+        )
+        fig_costs.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font_color="#e3e3d8",
+            height=max(360, len(top_detail) * 28),
+            margin=dict(l=0, r=70, t=10, b=10),
+            xaxis_title="Amount", yaxis_title="",
+            legend_title="Cost Type",
+        )
+        fig_costs.update_xaxes(tickprefix="$")
+        fig_costs.update_traces(textposition="outside", cliponaxis=False)
+        st.plotly_chart(fig_costs, width="stretch")
+    else:
+        st.caption("No nonzero cost lines for the selected filters.")
+
+    st.divider()
+
+    st.subheader("Monthly Statement")
+    summary_cols = ["Month", "Company"] + [
+        col for col in COST_SUMMARY_COLUMNS if col in costs_view.columns
+    ]
+    st.dataframe(
+        costs_view.sort_values(["Statement Month", "Company"])[summary_cols],
+        width="stretch",
+        hide_index=True,
+        column_config={
+            col: st.column_config.NumberColumn(col, format="$%.0f")
+            for col in summary_cols
+            if col not in {"Month", "Company"}
+        },
+    )
+
+    with st.expander("Detailed income statement"):
+        detail_cols = [
+            col for col in costs_view.columns
+            if col != "Statement Month"
+        ]
+        st.dataframe(
+            costs_view.sort_values(["Statement Month", "Company"])[detail_cols],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                col: st.column_config.NumberColumn(col, format="$%.0f")
+                for col in detail_cols
+                if col not in {"Month", "Company"}
+            },
+        )
 
 def render_material_ppg_metrics(view_g: pd.DataFrame):
     if view_g.empty or not {"Product", "Total", "Units"}.issubset(view_g.columns):
@@ -422,6 +699,7 @@ PROD_CONFIG_KEYS = {
     "gid_b13": ("production_gid_b13", "prod_gid_b13", "PRODUCTION_GID_B13"),
     "gid_b9": ("production_gid_b9", "prod_gid_b9", "PRODUCTION_GID_B9"),
     "gid_assign": ("production_gid_assign", "prod_gid_assign", "PRODUCTION_GID_ASSIGN"),
+    "gid_costs": ("production_gid_costs", "prod_gid_costs", "PRODUCTION_GID_COSTS"),
 }
 
 def _config_secret_or_env(key: str, default: str = "") -> str:
@@ -519,6 +797,7 @@ _default_sheet_url = saved_or_configured_setting(_saved, "sheet_url")
 _default_gid_b13 = saved_or_configured_setting(_saved, "gid_b13", "0")
 _default_gid_b9 = saved_or_configured_setting(_saved, "gid_b9")
 _default_gid_assign = saved_or_configured_setting(_saved, "gid_assign")
+_default_gid_costs = saved_or_configured_setting(_saved, "gid_costs", DEFAULT_COSTS_GID)
 
 with st.sidebar:
     st.header("Data Source")
@@ -538,6 +817,11 @@ with st.sidebar:
     gid_assign   = st.text_input(   "Assignments GID",  value=_default_gid_assign,
                                     placeholder="GID of a tab with Strain and Brand columns",
                                     key="prod_gid_assign")
+    gid_costs = st.text_input(
+        "Costs GID",
+        value=_default_gid_costs,
+        key="prod_gid_costs",
+    )
 
     if st.button("Load / Refresh", type="primary", width="stretch"):
         if sheet_url.strip():
@@ -545,6 +829,7 @@ with st.sidebar:
             save_setting("gid_b13",    gid_b13.strip())
             save_setting("gid_b9",     gid_b9.strip())
             save_setting("gid_assign", gid_assign.strip())
+            save_setting("gid_costs",  gid_costs.strip())
         st.cache_data.clear()
         st.rerun()
 
@@ -580,6 +865,15 @@ _low_price_a_grade = (
     & (_row_ppg < 1)
 )
 all_df = all_df[~_low_price_a_grade].copy()
+
+costs_df = pd.DataFrame()
+costs_error = ""
+if gid_costs.strip():
+    try:
+        costs_raw = load_tab(sheet_url, gid_costs.strip())
+        costs_df = parse_costs_tab(costs_raw)
+    except Exception as e:
+        costs_error = f"**Costs**: {e}"
 
 # ── Sidebar — Brand Assignments ───────────────────────────────────────────────
 # Brand assignments label brand-vendor rows by named brand. Non-brand vendors
@@ -716,7 +1010,12 @@ combined_df = pd.concat(
 )
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_brand, tab_wholesale, tab_both = st.tabs(["🏷️ Brand Sales", "🏪 Wholesale", "📊 Both"])
+tab_brand, tab_wholesale, tab_both, tab_costs = st.tabs([
+    "🏷️ Brand Sales",
+    "🏪 Wholesale",
+    "📊 Both",
+    "💸 Costs",
+])
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  TAB — Brand Sales                                               ║
@@ -1180,3 +1479,9 @@ with tab_both:
             st.plotly_chart(fig_c_m, width="stretch")
         else:
             st.caption("Monthly trend unavailable — Transfer Date not parsed.")
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  TAB — Costs                                                     ║
+# ╚══════════════════════════════════════════════════════════════════╝
+with tab_costs:
+    render_costs_tab(costs_df, costs_error)
