@@ -878,6 +878,43 @@ def init_storage():
                 updated_at TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trip_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trip_name TEXT,
+                rep TEXT,
+                trip_date TEXT NOT NULL,
+                start_label TEXT,
+                destination_label TEXT,
+                round_trip_miles REAL,
+                drive_minutes REAL,
+                summary_source TEXT,
+                google_maps_url TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trip_log_stops (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trip_id INTEGER NOT NULL,
+                stop_order INTEGER NOT NULL,
+                license TEXT,
+                store_name TEXT,
+                city TEXT,
+                map_category TEXT,
+                latitude REAL,
+                longitude REAL,
+                route_score REAL,
+                route_priority REAL,
+                market_sales_last_month REAL,
+                last_order TEXT,
+                last_order_amount REAL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(trip_id) REFERENCES trip_logs(id) ON DELETE CASCADE
+            )
+        """)
         for col in (
             "license_type TEXT", "county TEXT", "sales_last_month TEXT", "sales_rank TEXT",
             "flowers_prerolls TEXT", "concentrates_cartridges TEXT",
@@ -2224,6 +2261,344 @@ def format_route_miles(miles):
         return f"{float(miles):,.1f} mi"
     except (TypeError, ValueError):
         return "--"
+
+def _trip_date_value(value):
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value or datetime.now().date())
+
+def trip_stop_record_from_row(row, stop_order):
+    last_order = pd.to_datetime(row.get("Last Order"), errors="coerce")
+    return {
+        "stop_order": int(stop_order),
+        "license": str(row.get("License", "") or ""),
+        "store_name": str(row.get("Store Name", "") or "Unnamed Store"),
+        "city": str(row.get("City", "") or ""),
+        "map_category": str(row.get("Map Category", "") or row.get("Designation", "") or ""),
+        "latitude": route_numeric_value(row.get("Latitude"), default=None),
+        "longitude": route_numeric_value(row.get("Longitude"), default=None),
+        "route_score": route_numeric_value(row.get("Route Score"), default=None),
+        "route_priority": route_numeric_value(row.get("Route Priority"), default=None),
+        "market_sales_last_month": route_numeric_value(row.get("Market Sales Last Month"), default=None),
+        "last_order": last_order.date().isoformat() if pd.notna(last_order) else "",
+        "last_order_amount": route_numeric_value(row.get("Last Order Amount"), default=None),
+    }
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_trip_logs():
+    init_storage()
+    with sqlite3.connect(storage_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT id, trip_name, rep, trip_date, start_label, destination_label,
+                   round_trip_miles, drive_minutes, summary_source, google_maps_url,
+                   notes, created_at, updated_at
+            FROM trip_logs
+            ORDER BY trip_date DESC, updated_at DESC
+        """).fetchall()
+    return pd.DataFrame([dict(row) for row in rows])
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_trip_log_stops(trip_id):
+    init_storage()
+    with sqlite3.connect(storage_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT id, trip_id, stop_order, license, store_name, city, map_category,
+                   latitude, longitude, route_score, route_priority,
+                   market_sales_last_month, last_order, last_order_amount, created_at
+            FROM trip_log_stops
+            WHERE trip_id = ?
+            ORDER BY stop_order, id
+        """, (int(trip_id),)).fetchall()
+    return pd.DataFrame([dict(row) for row in rows])
+
+def clear_trip_log_cache():
+    load_trip_logs.clear()
+    load_trip_log_stops.clear()
+
+def save_trip_log(trip_name, rep, trip_date, start_endpoint, destination_endpoint, waypoint_rows, trip_summary, google_maps_url, notes=""):
+    init_storage()
+    now = datetime.now().isoformat(timespec="seconds")
+    trip_summary = trip_summary or {}
+    stop_records = [
+        trip_stop_record_from_row(row, idx)
+        for idx, (_, row) in enumerate(waypoint_rows.iterrows(), start=1)
+    ]
+    with sqlite3.connect(storage_path()) as conn:
+        cur = conn.execute("""
+            INSERT INTO trip_logs
+                (trip_name, rep, trip_date, start_label, destination_label,
+                 round_trip_miles, drive_minutes, summary_source, google_maps_url,
+                 notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            str(trip_name or "").strip(),
+            str(rep or "").strip(),
+            _trip_date_value(trip_date),
+            (start_endpoint or {}).get("label", ""),
+            (destination_endpoint or {}).get("label", ""),
+            route_numeric_value(trip_summary.get("distance_miles"), default=None),
+            route_numeric_value(trip_summary.get("duration_minutes"), default=None),
+            str(trip_summary.get("source", "") or ""),
+            str(google_maps_url or ""),
+            str(notes or ""),
+            now,
+            now,
+        ))
+        trip_id = cur.lastrowid
+        conn.executemany("""
+            INSERT INTO trip_log_stops
+                (trip_id, stop_order, license, store_name, city, map_category,
+                 latitude, longitude, route_score, route_priority,
+                 market_sales_last_month, last_order, last_order_amount, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            (
+                trip_id, record["stop_order"], record["license"], record["store_name"],
+                record["city"], record["map_category"], record["latitude"], record["longitude"],
+                record["route_score"], record["route_priority"], record["market_sales_last_month"],
+                record["last_order"], record["last_order_amount"], now,
+            )
+            for record in stop_records
+        ])
+    clear_trip_log_cache()
+    return trip_id
+
+def update_trip_log(trip_id, rep, trip_date, round_trip_miles, drive_minutes, notes):
+    init_storage()
+    now = datetime.now().isoformat(timespec="seconds")
+    with sqlite3.connect(storage_path()) as conn:
+        conn.execute("""
+            UPDATE trip_logs
+            SET rep = ?, trip_date = ?, round_trip_miles = ?, drive_minutes = ?,
+                notes = ?, updated_at = ?
+            WHERE id = ?
+        """, (
+            str(rep or "").strip(),
+            _trip_date_value(trip_date),
+            route_numeric_value(round_trip_miles, default=0),
+            route_numeric_value(drive_minutes, default=0),
+            str(notes or ""),
+            now,
+            int(trip_id),
+        ))
+    clear_trip_log_cache()
+
+def delete_trip_log(trip_id):
+    init_storage()
+    with sqlite3.connect(storage_path()) as conn:
+        conn.execute("DELETE FROM trip_log_stops WHERE trip_id = ?", (int(trip_id),))
+        conn.execute("DELETE FROM trip_logs WHERE id = ?", (int(trip_id),))
+    clear_trip_log_cache()
+
+def add_trip_log_stop(trip_id, row):
+    init_storage()
+    now = datetime.now().isoformat(timespec="seconds")
+    stops = load_trip_log_stops(int(trip_id))
+    max_order = pd.to_numeric(stops.get("stop_order", pd.Series(dtype=int)), errors="coerce").max()
+    next_order = int(0 if pd.isna(max_order) else max_order) + 1
+    record = trip_stop_record_from_row(row, next_order)
+    with sqlite3.connect(storage_path()) as conn:
+        conn.execute("""
+            INSERT INTO trip_log_stops
+                (trip_id, stop_order, license, store_name, city, map_category,
+                 latitude, longitude, route_score, route_priority,
+                 market_sales_last_month, last_order, last_order_amount, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            int(trip_id), record["stop_order"], record["license"], record["store_name"],
+            record["city"], record["map_category"], record["latitude"], record["longitude"],
+            record["route_score"], record["route_priority"], record["market_sales_last_month"],
+            record["last_order"], record["last_order_amount"], now,
+        ))
+    clear_trip_log_cache()
+
+def delete_trip_log_stop(stop_id):
+    init_storage()
+    with sqlite3.connect(storage_path()) as conn:
+        conn.execute("DELETE FROM trip_log_stops WHERE id = ?", (int(stop_id),))
+    clear_trip_log_cache()
+
+def trip_log_label(row):
+    name = str(row.get("trip_name", "") or "").strip()
+    rep = str(row.get("rep", "") or "Unassigned")
+    trip_date = str(row.get("trip_date", "") or "")
+    miles = route_numeric_value(row.get("round_trip_miles"))
+    label = name or f"{rep} route"
+    return f"{trip_date} - {label} - {rep} - {miles:.1f} mi"
+
+def store_option_label(row):
+    name = str(row.get("Store Name", "") or "Unnamed Store")
+    license_number = str(row.get("License", "") or "").strip()
+    city = str(row.get("City", "") or "").strip()
+    category = str(row.get("Map Category", "") or "").strip()
+    parts = [name]
+    if license_number:
+        parts.append(license_number)
+    if city:
+        parts.append(city)
+    if category:
+        parts.append(category)
+    return " - ".join(parts)
+
+def render_trip_log_panel(stores):
+    trip_logs = load_trip_logs()
+    with st.expander("Trip Log", expanded=False):
+        if trip_logs.empty:
+            st.caption("No trips logged yet.")
+            return
+
+        trip_logs = trip_logs.copy()
+        trip_logs["round_trip_miles"] = pd.to_numeric(trip_logs["round_trip_miles"], errors="coerce").fillna(0)
+        by_rep = (
+            trip_logs.groupby(trip_logs["rep"].replace("", "Unassigned"), dropna=False)["round_trip_miles"]
+            .sum()
+            .reset_index()
+            .rename(columns={"rep": "Rep", "round_trip_miles": "Logged Miles"})
+            .sort_values("Logged Miles", ascending=False)
+        )
+        st.dataframe(
+            by_rep,
+            width="stretch",
+            hide_index=True,
+            column_config={"Logged Miles": st.column_config.NumberColumn("Logged Miles", format="%.1f mi")},
+        )
+
+        selected_trip_id = st.selectbox(
+            "Trip",
+            trip_logs["id"].tolist(),
+            format_func=lambda trip_id: trip_log_label(trip_logs[trip_logs["id"].eq(trip_id)].iloc[0]),
+            key="territory_trip_log_select",
+        )
+        selected_trip = trip_logs[trip_logs["id"].eq(selected_trip_id)].iloc[0]
+        rep_choices = sorted([
+            rep for rep in stores.get("Territory Rep", pd.Series(dtype=str)).dropna().astype(str).unique().tolist()
+            if rep.strip()
+        ])
+        selected_rep = str(selected_trip.get("rep", "") or "")
+        if selected_rep and selected_rep not in rep_choices:
+            rep_choices = [selected_rep] + rep_choices
+        if "" not in rep_choices:
+            rep_choices = [""] + rep_choices
+
+        edit_cols = st.columns([1, 1, 1, 1])
+        edit_rep = edit_cols[0].selectbox(
+            "Rep",
+            rep_choices,
+            index=rep_choices.index(selected_rep) if selected_rep in rep_choices else 0,
+            key=f"territory_trip_rep_{selected_trip_id}",
+        )
+        edit_date = edit_cols[1].date_input(
+            "Trip Date",
+            value=pd.to_datetime(selected_trip.get("trip_date"), errors="coerce").date()
+            if pd.notna(pd.to_datetime(selected_trip.get("trip_date"), errors="coerce"))
+            else datetime.now().date(),
+            key=f"territory_trip_date_{selected_trip_id}",
+        )
+        edit_miles = edit_cols[2].number_input(
+            "Round Trip Miles",
+            min_value=0.0,
+            value=float(route_numeric_value(selected_trip.get("round_trip_miles"))),
+            step=1.0,
+            format="%.1f",
+            key=f"territory_trip_miles_{selected_trip_id}",
+        )
+        edit_drive = edit_cols[3].number_input(
+            "Drive Minutes",
+            min_value=0.0,
+            value=float(route_numeric_value(selected_trip.get("drive_minutes"))),
+            step=5.0,
+            format="%.0f",
+            key=f"territory_trip_drive_{selected_trip_id}",
+        )
+        edit_notes = st.text_area(
+            "Notes",
+            value=str(selected_trip.get("notes", "") or ""),
+            key=f"territory_trip_notes_{selected_trip_id}",
+        )
+        action_cols = st.columns([1, 1, 2])
+        if action_cols[0].button("Save Trip", type="primary", width="stretch", key=f"territory_trip_save_{selected_trip_id}"):
+            update_trip_log(selected_trip_id, edit_rep, edit_date, edit_miles, edit_drive, edit_notes)
+            st.session_state["territory_notice"] = "Trip log updated."
+            st.rerun()
+        if action_cols[1].button("Delete Trip", type="secondary", width="stretch", key=f"territory_trip_delete_{selected_trip_id}"):
+            delete_trip_log(selected_trip_id)
+            st.session_state["territory_notice"] = "Trip log deleted."
+            st.rerun()
+        google_url = str(selected_trip.get("google_maps_url", "") or "")
+        if google_url:
+            action_cols[2].markdown(
+                (
+                    '<a class="route-maps-button" '
+                    f'href="{html_lib.escape(google_url, quote=True)}" '
+                    'target="_blank" rel="noopener noreferrer">'
+                    "Open Logged Route"
+                    "</a>"
+                ),
+                unsafe_allow_html=True,
+            )
+
+        stops = load_trip_log_stops(selected_trip_id)
+        if stops.empty:
+            st.caption("No stops saved for this trip.")
+        else:
+            display_stops = stops.rename(columns={
+                "stop_order": "Stop #",
+                "license": "License",
+                "store_name": "Store Name",
+                "city": "City",
+                "map_category": "Designation",
+                "market_sales_last_month": "Market Sales",
+                "last_order": "Last Order",
+                "last_order_amount": "Last Order Amount",
+            })[[
+                "id", "Stop #", "Store Name", "License", "City", "Designation",
+                "Market Sales", "Last Order", "Last Order Amount",
+            ]]
+            st.dataframe(
+                display_stops.drop(columns=["id"]),
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Market Sales": st.column_config.NumberColumn("Market Sales", format="$%.0f"),
+                    "Last Order Amount": st.column_config.NumberColumn("Last Order Amount", format="$%.0f"),
+                },
+            )
+            remove_stop_id = st.selectbox(
+                "Remove Stop",
+                display_stops["id"].tolist(),
+                format_func=lambda stop_id: store_option_label(
+                    display_stops[display_stops["id"].eq(stop_id)]
+                    .rename(columns={
+                        "Store Name": "Store Name",
+                        "License": "License",
+                        "City": "City",
+                        "Designation": "Map Category",
+                    })
+                    .iloc[0]
+                ),
+                key=f"territory_trip_remove_stop_{selected_trip_id}",
+            )
+            if st.button("Remove Selected Stop", type="secondary", width="stretch", key=f"territory_trip_remove_btn_{selected_trip_id}"):
+                delete_trip_log_stop(remove_stop_id)
+                st.session_state["territory_notice"] = "Trip stop removed."
+                st.rerun()
+
+        addable = stores.copy()
+        addable = addable[addable["Store Name"].astype(str).str.strip().ne("")]
+        if not addable.empty:
+            add_options = addable.sort_values(["Store Name", "License"]).index.tolist()
+            add_stop_idx = st.selectbox(
+                "Add Stop",
+                add_options,
+                format_func=lambda idx: store_option_label(addable.loc[idx]),
+                key=f"territory_trip_add_stop_{selected_trip_id}",
+            )
+            if st.button("Add Selected Stop", type="primary", width="stretch", key=f"territory_trip_add_btn_{selected_trip_id}"):
+                add_trip_log_stop(selected_trip_id, addable.loc[add_stop_idx])
+                st.session_state["territory_notice"] = "Trip stop added."
+                st.rerun()
 
 def enrich_territory_proximity(stores_df, radius_miles):
     if stores_df is None or stores_df.empty:
@@ -4751,6 +5126,8 @@ with tab_territory:
         route_start_endpoint = None
         route_destination_endpoint = None
         selected_route_rows = pd.DataFrame()
+        trip_summary = None
+        route_maps_url = ""
 
         with st.expander("Route Planner", expanded=True):
             route_api_key = google_maps_server_key()
@@ -4911,7 +5288,7 @@ with tab_territory:
                     },
                 )
                 if route_destination.strip():
-                    maps_url = google_maps_route_url(
+                    route_maps_url = google_maps_route_url(
                         route_start_endpoint.get("maps_value") if route_start_endpoint else route_start,
                         route_destination_endpoint.get("maps_value") if route_destination_endpoint else route_destination,
                         selected_route_rows,
@@ -4920,7 +5297,7 @@ with tab_territory:
                     st.markdown(
                         (
                             '<a class="route-maps-button" '
-                            f'href="{html_lib.escape(maps_url, quote=True)}" '
+                            f'href="{html_lib.escape(route_maps_url, quote=True)}" '
                             'target="_blank" rel="noopener noreferrer">'
                             "Open Route in Google Maps"
                             "</a>"
@@ -4929,6 +5306,62 @@ with tab_territory:
                     )
                 else:
                     st.caption("Enter a final destination to open the selected stops in Google Maps.")
+
+                route_rep_values = sorted([
+                    rep for rep in stores["Territory Rep"].dropna().astype(str).unique().tolist()
+                    if rep.strip()
+                ])
+                selected_rep_values = [
+                    rep for rep in selected_route_rows.get("Territory Rep", pd.Series(dtype=str)).dropna().astype(str).tolist()
+                    if rep.strip()
+                ]
+                default_log_rep = rep_filter if rep_filter != "All" else ""
+                if not default_log_rep and selected_rep_values:
+                    default_log_rep = pd.Series(selected_rep_values).mode().iloc[0]
+                if default_log_rep and default_log_rep not in route_rep_values:
+                    route_rep_values = [default_log_rep] + route_rep_values
+                route_rep_options = [""] + [rep for rep in route_rep_values if rep]
+                default_log_name = (
+                    f"{default_log_rep or 'Trip'} {datetime.now().strftime('%Y-%m-%d')}"
+                )
+                log_cols = st.columns([1, 1, 1])
+                log_rep = log_cols[0].selectbox(
+                    "Log Rep",
+                    route_rep_options,
+                    index=route_rep_options.index(default_log_rep) if default_log_rep in route_rep_options else 0,
+                    key="territory_route_log_rep",
+                )
+                log_date = log_cols[1].date_input(
+                    "Trip Date",
+                    value=datetime.now().date(),
+                    key="territory_route_log_date",
+                )
+                log_name = log_cols[2].text_input(
+                    "Trip Name",
+                    value=default_log_name,
+                    key="territory_route_log_name",
+                )
+                log_notes = st.text_input("Trip Notes", key="territory_route_log_notes")
+                if st.button(
+                    "Add to Trip Log",
+                    type="primary",
+                    width="stretch",
+                    key="territory_add_trip_log",
+                    disabled=selected_route_rows.empty,
+                ):
+                    trip_id = save_trip_log(
+                        log_name,
+                        log_rep,
+                        log_date,
+                        route_start_endpoint,
+                        route_destination_endpoint,
+                        selected_route_rows,
+                        trip_summary,
+                        route_maps_url,
+                        notes=log_notes,
+                    )
+                    st.session_state["territory_notice"] = f"Trip log saved #{trip_id}."
+                    st.rerun()
 
         active_route_overlay = route_map_overlay(
             route_start_endpoint,
@@ -5007,6 +5440,7 @@ with tab_territory:
                     },
                 )
 
+        render_trip_log_panel(stores)
         render_territory_location_data_panel(locations, coord_ready)
         render_territory_geocode_panel(locations, coord_ready, api_key)
 
