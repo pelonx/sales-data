@@ -238,7 +238,11 @@ def cost_detail_summary(costs_view: pd.DataFrame, columns: list[str], cost_type:
     detail = detail[detail["Amount"].abs() > 0].copy()
     return detail[["Cost Type", "Line Item", "Amount"]]
 
-def render_costs_tab(costs_df: pd.DataFrame, costs_error: str = ""):
+def render_costs_tab(
+    costs_df: pd.DataFrame,
+    costs_error: str = "",
+    selected_companies=None,
+):
     if costs_error:
         st.error(costs_error)
         return
@@ -251,23 +255,19 @@ def render_costs_tab(costs_df: pd.DataFrame, costs_error: str = ""):
         st.warning("Costs data loaded, but Month values could not be parsed.")
         return
 
-    c1, c2, c3 = st.columns([2, 1, 1])
     companies = sorted(costs_df["Company"].dropna().unique().tolist())
-    selected_companies = c1.multiselect(
-        "Company",
-        companies,
-        default=companies,
-        key="cost_company",
-    )
+    if selected_companies is None:
+        selected_companies = companies
     min_date, max_date, from_default, to_default = current_ytd_date_bounds(valid_months)
-    from_date = c2.date_input(
+    c1, c2 = st.columns(2)
+    from_date = c1.date_input(
         "From",
         value=from_default,
         min_value=min_date,
         max_value=max_date,
         key="cost_from",
     )
-    to_date = c3.date_input(
+    to_date = c2.date_input(
         "To",
         value=to_default,
         min_value=min_date,
@@ -987,6 +987,17 @@ sel_facility = st.radio(
     label_visibility="collapsed",
     key="sel_facility",
 )
+
+_cost_companies = sorted(costs_df["Company"].dropna().unique().tolist()) if not costs_df.empty else []
+selected_cost_companies = _cost_companies
+if _cost_companies:
+    st.caption("Company")
+    selected_cost_companies = []
+    _company_cols = st.columns(len(_cost_companies))
+    for col, company in zip(_company_cols, _cost_companies):
+        key_part = re.sub(r"[^a-z0-9]+", "_", company.casefold()).strip("_")
+        if col.checkbox(company, value=True, key=f"global_company_{key_part}"):
+            selected_cost_companies.append(company)
 st.divider()
 
 # Apply facility filter for display
@@ -1484,4 +1495,4 @@ with tab_both:
 # ║  TAB — Costs                                                     ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_costs:
-    render_costs_tab(costs_df, costs_error)
+    render_costs_tab(costs_df, costs_error, selected_cost_companies)
