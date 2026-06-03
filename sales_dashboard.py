@@ -12,7 +12,7 @@ import os
 import sqlite3
 import tempfile
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "sales_dashboard_matplotlib"))
 import matplotlib
 matplotlib.use("Agg")
@@ -1559,6 +1559,176 @@ def territory_selector_mask(stores_df, designation):
             & stores_df.get("Priority Level", pd.Series("", index=stores_df.index)).eq(priority)
         )
     return stores_df.get("Map Category", pd.Series("", index=stores_df.index)).eq(designation)
+
+def parse_lat_lng_text(value):
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)", text)
+    if not match:
+        return None
+    lat = float(match.group(1))
+    lng = float(match.group(2))
+    if -90 <= lat <= 90 and -180 <= lng <= 180:
+        return lat, lng
+    return None
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def geocode_route_endpoint(query, api_key):
+    parsed = parse_lat_lng_text(query)
+    if parsed:
+        return parsed
+    address = str(query or "").strip()
+    if not address or not api_key:
+        return None
+
+    import requests as _req
+
+    try:
+        resp = _req.get(
+            "https://maps.googleapis.com/maps/api/geocode/json",
+            params={"address": address, "key": api_key},
+            timeout=15,
+        )
+        data = resp.json()
+    except Exception:
+        return None
+
+    if data.get("status") != "OK" or not data.get("results"):
+        return None
+    loc = data["results"][0].get("geometry", {}).get("location", {})
+    lat = _coerce_coord(loc.get("lat"))
+    lng = _coerce_coord(loc.get("lng"))
+    if pd.isna(lat) or pd.isna(lng):
+        return None
+    return float(lat), float(lng)
+
+def route_numeric_value(value, default=0.0):
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        return parse_amount(value, strict=False)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+def territory_route_priority(row):
+    category = str(row.get("Map Category", "") or "")
+    recommendation = str(row.get("Recommendation", "") or "")
+    base_scores = {
+        "K Savage Lapsed - High Priority": 100,
+        "Open Lane - High Priority": 95,
+        "Pitch Mayfield": 90,
+        "K. Savage blocked": 86,
+        "K Savage Lapsed - Medium Priority": 82,
+        "Open Lane - Medium Priority": 78,
+        "Leisure Land Placed": 62,
+        "Mayfield placed": 58,
+        "Carries K. Savage": 54,
+        "Maintain K. Savage": 54,
+        "K Savage Lapsed - Low Priority": 50,
+        "Open Lane - Low Priority": 45,
+        TERRITORY_ALL_OTHER_SELECTOR: 20,
+        "No recent brand": 15,
+    }
+    score = base_scores.get(category, base_scores.get(recommendation, 25))
+    score += route_numeric_value(row.get("Priority Score")) * 15
+    market_sales = route_numeric_value(row.get("Market Sales Last Month"))
+    if market_sales > 0:
+        score += min(math.log10(market_sales + 1), 7)
+    return float(score)
+
+def build_route_candidates(map_df, start_coords=None, destination_coords=None, max_detour_miles=0):
+    if map_df is None or map_df.empty:
+        return pd.DataFrame()
+
+    candidates = map_df.copy()
+    candidates["Latitude"] = pd.to_numeric(candidates["Latitude"], errors="coerce")
+    candidates["Longitude"] = pd.to_numeric(candidates["Longitude"], errors="coerce")
+    candidates = candidates[candidates["Latitude"].notna() & candidates["Longitude"].notna()].copy()
+    if candidates.empty:
+        return candidates
+
+    candidates["Route Priority"] = candidates.apply(territory_route_priority, axis=1)
+    candidates["Miles To Destination"] = None
+    candidates["Approx Detour Miles"] = None
+    candidates["Route Score"] = candidates["Route Priority"]
+
+    if destination_coords:
+        dest_lat, dest_lng = destination_coords
+        candidates["Miles To Destination"] = candidates.apply(
+            lambda r: haversine_miles(r["Latitude"], r["Longitude"], dest_lat, dest_lng),
+            axis=1,
+        )
+        candidates["Route Score"] = candidates["Route Score"] - (
+            pd.to_numeric(candidates["Miles To Destination"], errors="coerce").fillna(0) * 0.15
+        )
+
+    if start_coords and destination_coords:
+        start_lat, start_lng = start_coords
+        dest_lat, dest_lng = destination_coords
+        direct_miles = haversine_miles(start_lat, start_lng, dest_lat, dest_lng)
+        candidates["Approx Detour Miles"] = candidates.apply(
+            lambda r: max(
+                0,
+                haversine_miles(start_lat, start_lng, r["Latitude"], r["Longitude"])
+                + haversine_miles(r["Latitude"], r["Longitude"], dest_lat, dest_lng)
+                - direct_miles,
+            ),
+            axis=1,
+        )
+        candidates["Route Score"] = candidates["Route Priority"] - (
+            pd.to_numeric(candidates["Approx Detour Miles"], errors="coerce").fillna(0) * 2
+        )
+        if max_detour_miles and max_detour_miles > 0:
+            candidates = candidates[
+                pd.to_numeric(candidates["Approx Detour Miles"], errors="coerce").fillna(0) <= max_detour_miles
+            ].copy()
+
+    sort_cols = ["Route Score", "Route Priority"]
+    ascending = [False, False]
+    if "Market Sales Last Month" in candidates:
+        sort_cols.append("Market Sales Last Month")
+        ascending.append(False)
+    return candidates.sort_values(sort_cols, ascending=ascending)
+
+def territory_route_option_label(row):
+    parts = [
+        str(row.get("Store Name", "") or "Unnamed Store"),
+        str(row.get("Map Category", "") or "Uncategorized"),
+    ]
+    detour = route_numeric_value(row.get("Approx Detour Miles"), default=None)
+    distance = route_numeric_value(row.get("Miles To Destination"), default=None)
+    if detour is not None:
+        parts.append(f"{detour:.1f} mi detour")
+    elif distance is not None:
+        parts.append(f"{distance:.1f} mi from destination")
+    market_sales = route_numeric_value(row.get("Market Sales Last Month"))
+    if market_sales > 0:
+        parts.append(fmt_usd(market_sales))
+    return " · ".join(parts)
+
+def google_maps_route_url(origin, destination, waypoint_rows):
+    params = {
+        "api": "1",
+        "travelmode": "driving",
+        "destination": str(destination or "").strip(),
+    }
+    origin_text = str(origin or "").strip()
+    if origin_text:
+        params["origin"] = origin_text
+    waypoints = [
+        f"{float(row['Latitude']):.6f},{float(row['Longitude']):.6f}"
+        for _, row in waypoint_rows.iterrows()
+        if pd.notna(row.get("Latitude")) and pd.notna(row.get("Longitude"))
+    ]
+    if waypoints:
+        params["waypoints"] = "|".join(waypoints[:9])
+    return "https://www.google.com/maps/dir/?" + urlencode(params, safe="|,")
 
 def enrich_territory_proximity(stores_df, radius_miles):
     if stores_df is None or stores_df.empty:
@@ -4073,6 +4243,125 @@ with tab_territory:
             rendered_google = render_google_territory_map(mapped_filtered) if use_google_map else False
             if not rendered_google:
                 render_plotly_territory_map(mapped_filtered)
+
+        with st.expander("Route Planner", expanded=True):
+            route_api_key = google_maps_server_key()
+            route_cols = st.columns([1.25, 1.25, 0.55, 0.7])
+            route_start = route_cols[0].text_input(
+                "Start",
+                key="territory_route_start",
+                placeholder="Address or lat,lng",
+            )
+            route_destination = route_cols[1].text_input(
+                "Final Destination",
+                key="territory_route_destination",
+                placeholder="Address or lat,lng",
+            )
+            route_max_stops = route_cols[2].number_input(
+                "Stops",
+                min_value=1,
+                max_value=9,
+                value=5,
+                step=1,
+                key="territory_route_max_stops",
+            )
+            route_max_detour = route_cols[3].number_input(
+                "Max Detour",
+                min_value=0.0,
+                max_value=50.0,
+                value=8.0,
+                step=0.5,
+                format="%.1f",
+                key="territory_route_max_detour",
+            )
+
+            route_start_coords = geocode_route_endpoint(route_start, route_api_key) if route_start.strip() else None
+            route_destination_coords = (
+                geocode_route_endpoint(route_destination, route_api_key)
+                if route_destination.strip()
+                else None
+            )
+            route_candidates = build_route_candidates(
+                mapped_filtered,
+                start_coords=route_start_coords,
+                destination_coords=route_destination_coords,
+                max_detour_miles=route_max_detour,
+            )
+
+            if route_candidates.empty:
+                st.info("No mapped route candidates match the current filters.")
+            else:
+                route_options = route_candidates.head(25).copy()
+                route_option_indices = route_options.index.tolist()
+                route_selection_key = "territory_route_selected_stops"
+                if route_selection_key in st.session_state:
+                    st.session_state[route_selection_key] = [
+                        idx for idx in st.session_state[route_selection_key]
+                        if idx in route_option_indices
+                    ]
+                    default_route_indices = None
+                else:
+                    default_route_indices = route_option_indices[: int(route_max_stops)]
+                selected_route_indices = st.multiselect(
+                    "Stops",
+                    route_option_indices,
+                    default=default_route_indices,
+                    format_func=lambda idx: territory_route_option_label(route_options.loc[idx]),
+                    key=route_selection_key,
+                )
+                selected_route_rows = route_options.loc[
+                    [idx for idx in route_option_indices if idx in selected_route_indices]
+                ].head(9)
+
+                route_summary_cols = st.columns(3)
+                route_summary_cols[0].metric("Candidates", f"{len(route_candidates):,}")
+                route_summary_cols[1].metric("Selected Stops", f"{len(selected_route_rows):,}")
+                if selected_route_rows["Approx Detour Miles"].notna().any():
+                    max_detour = pd.to_numeric(
+                        selected_route_rows["Approx Detour Miles"],
+                        errors="coerce",
+                    ).max()
+                    route_summary_cols[2].metric("Max Detour", f"{max_detour:.1f} mi")
+                elif selected_route_rows["Miles To Destination"].notna().any():
+                    nearest_destination = pd.to_numeric(
+                        selected_route_rows["Miles To Destination"],
+                        errors="coerce",
+                    ).min()
+                    route_summary_cols[2].metric("Nearest Dest.", f"{nearest_destination:.1f} mi")
+                else:
+                    route_summary_cols[2].metric("Top Score", f"{route_options['Route Score'].max():.1f}")
+
+                route_display_cols = [
+                    "Store Name", "License", "City", "Territory Rep", "Territory",
+                    "Map Category", "Route Score", "Route Priority", "Approx Detour Miles",
+                    "Miles To Destination", "Market Sales Last Month", "Last Order",
+                    "Last Order Amount", "K. Savage Last Order", "K. Savage Last Order Amount",
+                ]
+                route_display_cols = [col for col in route_display_cols if col in route_options.columns]
+                st.dataframe(
+                    route_options[route_display_cols],
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Route Score": st.column_config.NumberColumn("Route Score", format="%.1f"),
+                        "Route Priority": st.column_config.NumberColumn("Priority", format="%.1f"),
+                        "Approx Detour Miles": st.column_config.NumberColumn("Detour", format="%.1f mi"),
+                        "Miles To Destination": st.column_config.NumberColumn("To Destination", format="%.1f mi"),
+                        "Market Sales Last Month": st.column_config.NumberColumn("Market Sales", format="$%.0f"),
+                        "Last Order": st.column_config.DatetimeColumn("Last Order", format="MM/DD/YYYY"),
+                        "Last Order Amount": st.column_config.NumberColumn("Last Order Amount", format="$%.0f"),
+                        "K. Savage Last Order": st.column_config.DatetimeColumn("K. Savage Last", format="MM/DD/YYYY"),
+                        "K. Savage Last Order Amount": st.column_config.NumberColumn("K. Savage Last Order", format="$%.0f"),
+                    },
+                )
+                if route_destination.strip():
+                    st.link_button(
+                        "Open Route in Google Maps",
+                        google_maps_route_url(route_start, route_destination, selected_route_rows),
+                        width="stretch",
+                    )
+                else:
+                    st.caption("Enter a final destination to open the selected stops in Google Maps.")
 
         st.subheader("Placement Signals")
         table_cols = [
