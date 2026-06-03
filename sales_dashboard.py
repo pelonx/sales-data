@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
+import html as html_lib
 import hashlib
 import json
 import math
@@ -117,13 +118,24 @@ TERRITORY_K_SAVAGE_LAPSED_CATEGORIES = [
     "K Savage Lapsed - Medium Priority",
     "K Savage Lapsed - Low Priority",
 ]
+TERRITORY_SELECTOR_ORDER = [
+    "Carries K. Savage",
+    "Mayfield placed",
+    "Leisure Land Placed",
+    "K Savage Lapsed - High Priority",
+    "K Savage Lapsed - Medium Priority",
+    "K Savage Lapsed - Low Priority",
+    "Open Lane - High Priority",
+    "Open Lane - Medium Priority",
+    "Open Lane - Low Priority",
+    "Pitch Mayfield",
+    TERRITORY_ALL_OTHER_SELECTOR,
+]
 TERRITORY_MAP_STROKES = {
     "Leisure Land Placed": "#F28C28",
 }
 TERRITORY_SELECTOR_ALWAYS_VISIBLE_CATEGORIES = {
-    "Leisure Land Placed",
-    TERRITORY_ALL_OTHER_SELECTOR,
-    *TERRITORY_K_SAVAGE_LAPSED_CATEGORIES,
+    *TERRITORY_SELECTOR_ORDER,
 }
 TOTAL_PATTERN = re.compile(
     r"^(total|totals|sum|grand\s*total|ytd|year\s*to\s*date|annual|avg|average|subtotal)s?$",
@@ -1196,6 +1208,126 @@ def geocode_store_locations(locations_df, api_key, limit=25):
         else:
             updated.at[idx, "Geocode Status"] = status
     return updated, {"attempted": attempted, "successes": successes}
+
+def render_territory_location_data_panel(locations, coord_ready):
+    with st.expander("Location Data", expanded=locations.empty):
+        template_df = pd.DataFrame([{
+            "License": "LIC-001",
+            "Store Name": "Example Retailer",
+            "Address": "123 Main St",
+            "City": "Seattle",
+            "State": "WA",
+            "Zip": "98101",
+            "Latitude": "",
+            "Longitude": "",
+        }])
+        st.download_button(
+            "Download Location Template",
+            data=template_df.to_csv(index=False).encode("utf-8"),
+            file_name="store_locations_template.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+
+        upload_col, sheet_col = st.columns(2)
+        with upload_col:
+            loc_file = st.file_uploader(
+                "Upload Locations",
+                type=["csv", "xlsx"],
+                key="territory_location_upload",
+                help="Expected columns: License, Store Name, Address, City, State, Zip, Latitude, Longitude.",
+            )
+            if loc_file is not None:
+                upload_id = hashlib.md5(loc_file.getvalue()).hexdigest()
+                if st.session_state.get("territory_location_upload_id") != upload_id:
+                    try:
+                        uploaded_locations = read_store_location_file(loc_file)
+                        saved_count = save_store_locations(uploaded_locations)
+                    except Exception as exc:
+                        st.error(f"Could not read location file: {exc}")
+                    else:
+                        st.session_state["territory_location_upload_id"] = upload_id
+                        st.session_state["territory_notice"] = f"Saved {saved_count} store location rows."
+                        st.rerun()
+
+        with sheet_col:
+            loc_sheet_url = st.text_input(
+                "Location Sheet URL",
+                value=get_setting("location_sheet_url", ""),
+                key="territory_location_sheet_url",
+                placeholder="https://docs.google.com/spreadsheets/d/...",
+            )
+            loc_sheet_gid = st.text_input(
+                "Location Worksheet gid",
+                value=get_setting("location_sheet_gid", "0"),
+                key="territory_location_sheet_gid",
+            )
+            if st.button("Load Location Sheet", width="stretch", key="territory_load_location_sheet"):
+                if not loc_sheet_url.strip():
+                    st.warning("Enter a location sheet URL.")
+                else:
+                    try:
+                        load_location_sheet_as_df.clear()
+                        sheet_locations, sheet_shape = load_location_sheet_as_df(
+                            loc_sheet_url.strip(), loc_sheet_gid.strip() or "0"
+                        )
+                        saved_count = save_store_locations(sheet_locations)
+                        set_setting("location_sheet_url", loc_sheet_url.strip())
+                        set_setting("location_sheet_gid", loc_sheet_gid.strip() or "0")
+                    except Exception as exc:
+                        st.error(f"Could not load location sheet: {exc}")
+                    else:
+                        st.session_state["territory_notice"] = (
+                            f"Loaded {saved_count} locations from {sheet_shape[0]} rows."
+                        )
+                        st.rerun()
+
+        if not locations.empty:
+            st.caption(f"Saved locations: {len(locations):,} stores · {int(coord_ready.sum()):,} mapped")
+            if st.button("Clear Saved Locations", type="secondary", width="stretch", key="territory_clear_locations"):
+                clear_store_locations()
+                st.session_state.pop("territory_location_upload_id", None)
+                st.session_state["territory_notice"] = "Cleared saved store locations."
+                st.rerun()
+
+def render_territory_geocode_panel(locations, coord_ready, api_key):
+    if locations.empty:
+        return
+
+    missing_geocode = locations[
+        (~coord_ready)
+        & locations["Address"].astype(str).str.strip().ne("")
+    ]
+    with st.expander("Geocode Missing Coordinates", expanded=False):
+        if api_key:
+            stale_count = locations["Geocode Status"].astype(str).str.contains("expired", case=False, na=False).sum()
+            st.caption(
+                f"{len(missing_geocode):,} address row(s) are missing coordinates. "
+                f"{stale_count:,} Google-geocoded row(s) need refresh after the 30-day cache window."
+            )
+            geocode_limit = st.number_input(
+                "Max addresses to geocode now",
+                min_value=1,
+                max_value=max(1, min(250, len(missing_geocode))),
+                value=max(1, min(25, len(missing_geocode))) if len(missing_geocode) else 1,
+                step=1,
+                key="territory_geocode_limit",
+            )
+            if st.button(
+                "Geocode Missing Addresses",
+                type="primary",
+                width="stretch",
+                key="territory_geocode_btn",
+                disabled=len(missing_geocode) == 0,
+            ):
+                updated_locations, summary = geocode_store_locations(locations, api_key, geocode_limit)
+                save_store_locations(updated_locations)
+                st.session_state["territory_notice"] = (
+                    f"Geocoded {summary['successes']} of {summary['attempted']} attempted address rows."
+                )
+                st.rerun()
+        else:
+            st.caption("Add `google_maps_api_key` to Streamlit secrets to geocode missing addresses.")
 
 def build_revenue_store_profile(df, months):
     columns = [
@@ -3231,7 +3363,7 @@ st.markdown(f"""
   .metric-value {{font-size:22px;font-weight:600;color:#111;margin:0}}
   [data-testid="stMetric"] label,
   [data-testid="stMetric"] label p {{
-    color:#111 !important;
+    color:#F7F8FA !important;
   }}
   [data-testid="stExpander"] [data-testid="stMetric"] label,
   [data-testid="stExpander"] [data-testid="stMetric"] label p,
@@ -3257,6 +3389,26 @@ st.markdown(f"""
   div[class*="st-key-territory_designation_"] [data-testid="stWidgetLabel"] p,
   div[class*="st-key-territory_designation_"] [data-testid="stWidgetLabel"] span {{
     color:#FFFFFF !important;
+  }}
+  .route-maps-button {{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:2.65rem;
+    width:100%;
+    border-radius:0.5rem;
+    background:#16A34A;
+    border:1px solid #22C55E;
+    color:#FFFFFF !important;
+    font-weight:700;
+    text-decoration:none !important;
+    box-shadow:0 1px 0 rgba(255,255,255,0.18) inset;
+  }}
+  .route-maps-button:hover {{
+    background:#15803D;
+    border-color:#16A34A;
+    color:#FFFFFF !important;
+    text-decoration:none !important;
   }}
   [data-testid="stMetric"] label {{font-size:12px !important}}
 </style>
@@ -4417,128 +4569,12 @@ with tab_territory:
         locations["Latitude"].notna() & locations["Longitude"].notna()
         if not locations.empty else pd.Series(dtype=bool)
     )
+    api_key = google_maps_server_key()
 
-    with st.expander("Location Data", expanded=locations.empty):
-        template_df = pd.DataFrame([{
-            "License": "LIC-001",
-            "Store Name": "Example Retailer",
-            "Address": "123 Main St",
-            "City": "Seattle",
-            "State": "WA",
-            "Zip": "98101",
-            "Latitude": "",
-            "Longitude": "",
-        }])
-        st.download_button(
-            "Download Location Template",
-            data=template_df.to_csv(index=False).encode("utf-8"),
-            file_name="store_locations_template.csv",
-            mime="text/csv",
-            width="stretch",
-        )
-
-        upload_col, sheet_col = st.columns(2)
-        with upload_col:
-            loc_file = st.file_uploader(
-                "Upload Locations",
-                type=["csv", "xlsx"],
-                key="territory_location_upload",
-                help="Expected columns: License, Store Name, Address, City, State, Zip, Latitude, Longitude.",
-            )
-            if loc_file is not None:
-                upload_id = hashlib.md5(loc_file.getvalue()).hexdigest()
-                if st.session_state.get("territory_location_upload_id") != upload_id:
-                    try:
-                        uploaded_locations = read_store_location_file(loc_file)
-                        saved_count = save_store_locations(uploaded_locations)
-                    except Exception as exc:
-                        st.error(f"Could not read location file: {exc}")
-                    else:
-                        st.session_state["territory_location_upload_id"] = upload_id
-                        st.session_state["territory_notice"] = f"Saved {saved_count} store location rows."
-                        st.rerun()
-
-        with sheet_col:
-            loc_sheet_url = st.text_input(
-                "Location Sheet URL",
-                value=get_setting("location_sheet_url", ""),
-                key="territory_location_sheet_url",
-                placeholder="https://docs.google.com/spreadsheets/d/...",
-            )
-            loc_sheet_gid = st.text_input(
-                "Location Worksheet gid",
-                value=get_setting("location_sheet_gid", "0"),
-                key="territory_location_sheet_gid",
-            )
-            if st.button("Load Location Sheet", width="stretch", key="territory_load_location_sheet"):
-                if not loc_sheet_url.strip():
-                    st.warning("Enter a location sheet URL.")
-                else:
-                    try:
-                        load_location_sheet_as_df.clear()
-                        sheet_locations, sheet_shape = load_location_sheet_as_df(
-                            loc_sheet_url.strip(), loc_sheet_gid.strip() or "0"
-                        )
-                        saved_count = save_store_locations(sheet_locations)
-                        set_setting("location_sheet_url", loc_sheet_url.strip())
-                        set_setting("location_sheet_gid", loc_sheet_gid.strip() or "0")
-                    except Exception as exc:
-                        st.error(f"Could not load location sheet: {exc}")
-                    else:
-                        st.session_state["territory_notice"] = (
-                            f"Loaded {saved_count} locations from {sheet_shape[0]} rows."
-                        )
-                        st.rerun()
-
-        if not locations.empty:
-            st.caption(f"Saved locations: {len(locations):,} stores · {int(coord_ready.sum()):,} mapped")
-            if st.button("Clear Saved Locations", type="secondary", width="stretch", key="territory_clear_locations"):
-                clear_store_locations()
-                st.session_state.pop("territory_location_upload_id", None)
-                st.session_state["territory_notice"] = "Cleared saved store locations."
-                st.rerun()
-
-    locations = load_store_locations()
     if locations.empty:
         st.info("Load a store location CSV or Google Sheet to enable the territory map.")
+        render_territory_location_data_panel(locations, coord_ready)
     else:
-        coord_ready = locations["Latitude"].notna() & locations["Longitude"].notna()
-        api_key = google_maps_server_key()
-        missing_geocode = locations[
-            (~coord_ready)
-            & locations["Address"].astype(str).str.strip().ne("")
-        ]
-        with st.expander("Geocode Missing Coordinates", expanded=False):
-            if api_key:
-                stale_count = locations["Geocode Status"].astype(str).str.contains("expired", case=False, na=False).sum()
-                st.caption(
-                    f"{len(missing_geocode):,} address row(s) are missing coordinates. "
-                    f"{stale_count:,} Google-geocoded row(s) need refresh after the 30-day cache window."
-                )
-                geocode_limit = st.number_input(
-                    "Max addresses to geocode now",
-                    min_value=1,
-                    max_value=max(1, min(250, len(missing_geocode))),
-                    value=max(1, min(25, len(missing_geocode))) if len(missing_geocode) else 1,
-                    step=1,
-                    key="territory_geocode_limit",
-                )
-                if st.button(
-                    "Geocode Missing Addresses",
-                    type="primary",
-                    width="stretch",
-                    key="territory_geocode_btn",
-                    disabled=len(missing_geocode) == 0,
-                ):
-                    updated_locations, summary = geocode_store_locations(locations, api_key, geocode_limit)
-                    save_store_locations(updated_locations)
-                    st.session_state["territory_notice"] = (
-                        f"Geocoded {summary['successes']} of {summary['attempted']} attempted address rows."
-                    )
-                    st.rerun()
-            else:
-                st.caption("Add `google_maps_api_key` to Streamlit secrets to geocode missing addresses.")
-
         ord_df = st.session_state.get("order_df")
         if ord_df is None:
             st.warning("Order data is not loaded, so brand-carrying recommendations cannot be calculated yet.")
@@ -4603,9 +4639,13 @@ with tab_territory:
             category_values | TERRITORY_SELECTOR_ALWAYS_VISIBLE_CATEGORIES
         ) - TERRITORY_SELECTOR_EXCLUDED_CATEGORIES
         designation_options = [
-            category for category in TERRITORY_MAP_COLORS
+            category for category in TERRITORY_SELECTOR_ORDER
             if category in selector_category_values
         ]
+        designation_options.extend([
+            category for category in TERRITORY_MAP_COLORS
+            if category in selector_category_values and category not in designation_options
+        ])
         designation_options.extend(sorted(selector_category_values - set(designation_options)))
         selected_designations = []
         if designation_options:
@@ -4871,15 +4911,21 @@ with tab_territory:
                     },
                 )
                 if route_destination.strip():
-                    st.link_button(
-                        "Open Route in Google Maps",
-                        google_maps_route_url(
-                            route_start_endpoint.get("maps_value") if route_start_endpoint else route_start,
-                            route_destination_endpoint.get("maps_value") if route_destination_endpoint else route_destination,
-                            selected_route_rows,
-                            round_trip=True,
+                    maps_url = google_maps_route_url(
+                        route_start_endpoint.get("maps_value") if route_start_endpoint else route_start,
+                        route_destination_endpoint.get("maps_value") if route_destination_endpoint else route_destination,
+                        selected_route_rows,
+                        round_trip=True,
+                    )
+                    st.markdown(
+                        (
+                            '<a class="route-maps-button" '
+                            f'href="{html_lib.escape(maps_url, quote=True)}" '
+                            'target="_blank" rel="noopener noreferrer">'
+                            "Open Route in Google Maps"
+                            "</a>"
                         ),
-                        width="stretch",
+                        unsafe_allow_html=True,
                     )
                 else:
                     st.caption("Enter a final destination to open the selected stops in Google Maps.")
@@ -4960,6 +5006,9 @@ with tab_territory:
                         "Distance (mi)": st.column_config.NumberColumn("Distance", format="%.2f mi"),
                     },
                 )
+
+        render_territory_location_data_panel(locations, coord_ready)
+        render_territory_geocode_panel(locations, coord_ready, api_key)
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  TAB — Order Activity                                            ║
