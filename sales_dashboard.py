@@ -825,6 +825,113 @@ def _order_data_label(source, odf: pd.DataFrame, column_count=None):
         label += f" · {removed} duplicate {dup_word} removed"
     return label
 
+def _sales_goal_key(month_key):
+    return f"sales_goals:{month_key}"
+
+def _clean_goal_amount(value):
+    try:
+        return max(0.0, float(value or 0))
+    except Exception:
+        return 0.0
+
+def _load_sales_goals(month_key):
+    raw = get_setting(_sales_goal_key(month_key), "{}")
+    try:
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+    weeks = data.get("weeks", {}) if isinstance(data.get("weeks", {}), dict) else {}
+    return {
+        "eom": _clean_goal_amount(data.get("eom", 0)),
+        "weeks": {str(k): _clean_goal_amount(v) for k, v in weeks.items()},
+    }
+
+def _save_sales_goals(month_key, goals):
+    normalized = {
+        "eom": round(_clean_goal_amount(goals.get("eom", 0)), 2),
+        "weeks": {
+            str(k): round(_clean_goal_amount(v), 2)
+            for k, v in (goals.get("weeks", {}) or {}).items()
+            if _clean_goal_amount(v) > 0
+        },
+    }
+    set_setting(_sales_goal_key(month_key), json.dumps(normalized, sort_keys=True))
+
+def _month_label(month_key):
+    try:
+        return pd.Period(month_key, freq="M").to_timestamp().strftime("%B %Y")
+    except Exception:
+        return str(month_key)
+
+def _month_bounds(month_key):
+    period = pd.Period(month_key, freq="M")
+    return period.to_timestamp().date(), period.to_timestamp(how="end").date()
+
+def _short_date_label(value):
+    value = pd.Timestamp(value).date() if not hasattr(value, "strftime") else value
+    return f"{value.strftime('%b')} {value.day}"
+
+def _order_goal_month_options(odf):
+    current_period = pd.Period(pd.Timestamp.now(), freq="M")
+    periods = {current_period}
+    if odf is not None and "Submitted Date" in odf.columns:
+        dates = pd.to_datetime(odf["Submitted Date"], errors="coerce").dropna()
+        if not dates.empty:
+            periods.update(dates.dt.to_period("M").tolist())
+    return [str(period) for period in sorted(periods, reverse=True)]
+
+def _month_weeks(month_start, month_end):
+    weeks = []
+    cursor = month_start
+    while cursor <= month_end:
+        week_end = min(cursor + timedelta(days=6 - cursor.weekday()), month_end)
+        week_id = cursor.isoformat()
+        weeks.append({
+            "id": week_id,
+            "label": f"{_short_date_label(cursor)} - {_short_date_label(week_end)}",
+            "start": cursor,
+            "end": week_end,
+        })
+        cursor = week_end + timedelta(days=1)
+    return weeks
+
+def _build_goal_daily_frame(order_df, month_start, month_end, weeks, weekly_goals, eom_goal):
+    days = pd.date_range(month_start, month_end, freq="D")
+    daily = pd.DataFrame({"Date": days})
+    daily["Daily Sales"] = 0.0
+
+    if order_df is not None and not order_df.empty and {"Submitted Date", "Line Total"}.issubset(order_df.columns):
+        source = order_df.copy()
+        if "Brand" in source.columns:
+            source = source[source["Brand"] != "Bulk"]
+        source["Submitted Date"] = pd.to_datetime(source["Submitted Date"], errors="coerce")
+        source["Line Total"] = pd.to_numeric(source["Line Total"], errors="coerce").fillna(0)
+        source = source[
+            source["Submitted Date"].dt.date.between(month_start, month_end)
+            & (source["Line Total"] > 0)
+        ].copy()
+        if not source.empty:
+            grouped = source.groupby(source["Submitted Date"].dt.normalize())["Line Total"].sum()
+            daily["Daily Sales"] = daily["Date"].map(grouped).fillna(0.0)
+
+    daily["Actual Cumulative"] = daily["Daily Sales"].cumsum()
+    total_days = max(1, len(daily))
+    daily["EOM Goal Pace"] = [
+        _clean_goal_amount(eom_goal) * (day_index + 1) / total_days
+        for day_index in range(total_days)
+    ]
+
+    daily_goal_targets = pd.Series(0.0, index=daily.index)
+    for week in weeks:
+        week_goal = _clean_goal_amount(weekly_goals.get(week["id"], 0))
+        if week_goal <= 0:
+            continue
+        mask = daily["Date"].dt.date.between(week["start"], week["end"])
+        week_days = max(1, int(mask.sum()))
+        daily_goal_targets.loc[mask] = week_goal / week_days
+    daily["Weekly Goal Pace"] = daily_goal_targets.cumsum()
+    return daily
+
 def _enrich_order_df(odf: pd.DataFrame) -> pd.DataFrame:
     def _brand(sub):
         s = str(sub).strip()
@@ -4110,11 +4217,12 @@ window_months = [m for m in _ss_window if m in months] or _default_window
 w_top_lics, _ = compute_pareto(df, window_months, threshold)
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_contact, tab_sales, tab_territory, tab_orders, tab_mom = st.tabs([
+tab_contact, tab_sales, tab_territory, tab_orders, tab_goals, tab_mom = st.tabs([
     "📋 Store Contact Form",
     "📊 Sales by Store",
     "🗺️ Territory Map",
     "📦 Order Activity",
+    "🎯 Goals",
     "📅 Month over Month",
 ])
 
@@ -6256,6 +6364,226 @@ with tab_orders:
                 .rename(columns={"Client": "Store"})
             )
             st.dataframe(sample_prods, width="stretch", hide_index=True)
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  TAB — Goals                                                     ║
+# ╚══════════════════════════════════════════════════════════════════╝
+with tab_goals:
+    goal_order_df = st.session_state.get("order_df")
+    if goal_order_df is None:
+        st.info("Link or upload order activity data to enable monthly goals.")
+    elif not {"Submitted Date", "Line Total"}.issubset(goal_order_df.columns):
+        st.info("Order activity needs Submitted Date and Line Total columns to build goals.")
+    else:
+        goal_month_options = _order_goal_month_options(goal_order_df)
+        current_month_key = str(pd.Period(pd.Timestamp.now(), freq="M"))
+        default_goal_month_idx = (
+            goal_month_options.index(current_month_key)
+            if current_month_key in goal_month_options else 0
+        )
+        goal_controls = st.columns([1, 1, 2])
+        goal_month_key = goal_controls[0].selectbox(
+            "Month",
+            goal_month_options,
+            index=default_goal_month_idx,
+            format_func=_month_label,
+            key="goal_month",
+        )
+        goal_month_start, goal_month_end = _month_bounds(goal_month_key)
+        goal_weeks = _month_weeks(goal_month_start, goal_month_end)
+        saved_goals = _load_sales_goals(goal_month_key)
+
+        eom_goal = goal_controls[1].number_input(
+            "EOM Goal",
+            min_value=0.0,
+            value=float(saved_goals.get("eom", 0)),
+            step=1000.0,
+            format="%.0f",
+            key=f"goal_eom_{goal_month_key}",
+        )
+        goal_controls[2].markdown(
+            "<div style='height:1.85rem'></div>"
+            f"<div style='font-size:1.8rem;font-weight:700'>{_month_label(goal_month_key)}</div>",
+            unsafe_allow_html=True,
+        )
+
+        weekly_goal_rows = [
+            {
+                "Week": week["label"],
+                "Goal": _clean_goal_amount(saved_goals.get("weeks", {}).get(week["id"], 0)),
+            }
+            for week in goal_weeks
+        ]
+        weekly_goal_input = st.data_editor(
+            pd.DataFrame(weekly_goal_rows),
+            width="stretch",
+            hide_index=True,
+            key=f"goal_weekly_editor_{goal_month_key}",
+            disabled=["Week"],
+            column_config={
+                "Week": st.column_config.TextColumn("Week"),
+                "Goal": st.column_config.NumberColumn("Weekly Goal", min_value=0.0, step=500.0, format="$%.0f"),
+            },
+        )
+        weekly_goals = {}
+        for week, row in zip(goal_weeks, weekly_goal_input.to_dict("records")):
+            amount = _clean_goal_amount(row.get("Goal", 0))
+            if amount > 0:
+                weekly_goals[week["id"]] = amount
+
+        current_goals = {"eom": _clean_goal_amount(eom_goal), "weeks": weekly_goals}
+        saved_normalized = {
+            "eom": round(_clean_goal_amount(saved_goals.get("eom", 0)), 2),
+            "weeks": {
+                str(k): round(_clean_goal_amount(v), 2)
+                for k, v in saved_goals.get("weeks", {}).items()
+                if _clean_goal_amount(v) > 0
+            },
+        }
+        current_normalized = {
+            "eom": round(_clean_goal_amount(current_goals.get("eom", 0)), 2),
+            "weeks": {
+                str(k): round(_clean_goal_amount(v), 2)
+                for k, v in current_goals.get("weeks", {}).items()
+                if _clean_goal_amount(v) > 0
+            },
+        }
+        if current_normalized != saved_normalized:
+            _save_sales_goals(goal_month_key, current_normalized)
+
+        goal_daily = _build_goal_daily_frame(
+            goal_order_df,
+            goal_month_start,
+            goal_month_end,
+            goal_weeks,
+            weekly_goals,
+            eom_goal,
+        )
+        today = datetime.now().date()
+        if today < goal_month_start:
+            progress_day = goal_month_start
+        elif today > goal_month_end:
+            progress_day = goal_month_end
+        else:
+            progress_day = today
+        progress_mask = goal_daily["Date"].dt.date <= progress_day
+        sales_to_date = float(goal_daily.loc[progress_mask, "Daily Sales"].sum())
+        month_sales = float(goal_daily["Daily Sales"].sum())
+        total_days = max(1, len(goal_daily))
+        elapsed_days = max(1, min(total_days, (progress_day - goal_month_start).days + 1))
+        remaining_days = max(0, (goal_month_end - progress_day).days)
+        projected_eom = month_sales if progress_day == goal_month_end else sales_to_date / elapsed_days * total_days
+        active_goal = _clean_goal_amount(eom_goal) or sum(weekly_goals.values())
+        goal_gap = max(0.0, _clean_goal_amount(eom_goal) - sales_to_date) if eom_goal else 0.0
+        required_per_day = goal_gap / remaining_days if remaining_days else 0.0
+
+        gk1, gk2, gk3, gk4 = st.columns(4)
+        gk1.metric("Sales to Date", fmt_usd(sales_to_date))
+        gk2.metric("EOM Goal", fmt_usd(_clean_goal_amount(eom_goal)))
+        gk3.metric("Progress", pct(sales_to_date, active_goal) if active_goal else "0.0%")
+        gk4.metric("Projected EOM", fmt_usd(projected_eom), fmt_usd(projected_eom - _clean_goal_amount(eom_goal)) if eom_goal else None)
+        if eom_goal and remaining_days:
+            st.caption(f"{fmt_usd(goal_gap)} remaining · {fmt_usd(required_per_day)} per day needed through {_short_date_label(goal_month_end)}")
+
+        goal_daily_plot = goal_daily.copy()
+        goal_daily_plot.loc[goal_daily_plot["Date"].dt.date > progress_day, "Actual Cumulative"] = None
+        if remaining_days and sales_to_date > 0:
+            projection_mask = goal_daily_plot["Date"].dt.date >= progress_day
+            projection_dates = goal_daily_plot.loc[projection_mask, "Date"]
+            projection_steps = max(1, len(projection_dates) - 1)
+            goal_daily_plot["Projected Pace"] = None
+            goal_daily_plot.loc[projection_mask, "Projected Pace"] = [
+                sales_to_date + (projected_eom - sales_to_date) * (idx / projection_steps)
+                for idx in range(len(projection_dates))
+            ]
+        else:
+            goal_daily_plot["Projected Pace"] = None
+
+        _goal_chart_bg = "#0E1117"
+        _goal_chart_grid = "rgba(255,255,255,0.16)"
+        _goal_chart_text = "#F7F8FA"
+        fig_goals = go.Figure()
+        fig_goals.add_trace(go.Bar(
+            x=goal_daily_plot["Date"],
+            y=goal_daily_plot["Daily Sales"],
+            name="Daily sales",
+            marker_color="rgba(55,138,221,0.48)",
+            hovertemplate="%{x|%m/%d/%Y}<br>Daily sales: $%{y:,.0f}<extra></extra>",
+        ))
+        fig_goals.add_trace(go.Scatter(
+            x=goal_daily_plot["Date"],
+            y=goal_daily_plot["Actual Cumulative"],
+            name="Actual",
+            mode="lines+markers",
+            line=dict(color="#4CE89C", width=3),
+            marker=dict(size=5),
+            hovertemplate="%{x|%m/%d/%Y}<br>Actual: $%{y:,.0f}<extra></extra>",
+        ))
+        if eom_goal:
+            fig_goals.add_trace(go.Scatter(
+                x=goal_daily_plot["Date"],
+                y=goal_daily_plot["EOM Goal Pace"],
+                name="EOM goal pace",
+                mode="lines",
+                line=dict(color="#F3C969", width=2, dash="dash"),
+                hovertemplate="%{x|%m/%d/%Y}<br>EOM pace: $%{y:,.0f}<extra></extra>",
+            ))
+        if sum(weekly_goals.values()) > 0:
+            fig_goals.add_trace(go.Scatter(
+                x=goal_daily_plot["Date"],
+                y=goal_daily_plot["Weekly Goal Pace"],
+                name="Weekly goal pace",
+                mode="lines",
+                line=dict(color="#E8844C", width=2, dash="dot"),
+                hovertemplate="%{x|%m/%d/%Y}<br>Weekly pace: $%{y:,.0f}<extra></extra>",
+            ))
+        if goal_daily_plot["Projected Pace"].notna().any():
+            fig_goals.add_trace(go.Scatter(
+                x=goal_daily_plot["Date"],
+                y=goal_daily_plot["Projected Pace"],
+                name="Projected",
+                mode="lines",
+                line=dict(color="#A8ADB3", width=2, dash="dash"),
+                hovertemplate="%{x|%m/%d/%Y}<br>Projected: $%{y:,.0f}<extra></extra>",
+            ))
+        fig_goals.update_layout(
+            height=430,
+            margin=dict(t=10, b=10, l=10, r=10),
+            plot_bgcolor=_goal_chart_bg,
+            paper_bgcolor=_goal_chart_bg,
+            font=dict(color=_goal_chart_text),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            xaxis=dict(title=None, gridcolor=_goal_chart_grid, dtick="D1", tickformat="%b %-d"),
+            yaxis=dict(title="Sales", tickprefix="$", tickformat=",", gridcolor=_goal_chart_grid, rangemode="tozero"),
+            hoverlabel=dict(bgcolor="#1C2028", font_color=_goal_chart_text),
+        )
+        st.plotly_chart(fig_goals, width="stretch")
+
+        weekly_progress_rows = []
+        for week in goal_weeks:
+            week_actual = float(goal_daily.loc[
+                goal_daily["Date"].dt.date.between(week["start"], week["end"]),
+                "Daily Sales",
+            ].sum())
+            week_goal = _clean_goal_amount(weekly_goals.get(week["id"], 0))
+            weekly_progress_rows.append({
+                "Week": week["label"],
+                "Goal": week_goal,
+                "Actual": week_actual,
+                "Progress": pct_value(week_actual, week_goal) if week_goal else 0.0,
+                "Variance": week_actual - week_goal,
+            })
+        st.dataframe(
+            pd.DataFrame(weekly_progress_rows),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Goal": st.column_config.NumberColumn("Goal", format="$%.0f"),
+                "Actual": st.column_config.NumberColumn("Actual", format="$%.0f"),
+                "Progress": st.column_config.NumberColumn("Progress", format="%.1f%%"),
+                "Variance": st.column_config.NumberColumn("Variance", format="$%.0f"),
+            },
+        )
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  TAB — Month over Month                                          ║
