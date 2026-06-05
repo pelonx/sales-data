@@ -82,8 +82,7 @@ function testCultiveraExportRequest() {
 function syncCultiveraOrdersToSheet() {
   const startedAt = new Date();
   try {
-    const response = fetchCultiveraExport_();
-    const values = responseToSheetValues_(response);
+    const values = fetchCultiveraExportValues_();
     if (!values.length || !values[0].length) {
       throw new Error('Cultivera response did not contain tabular data.');
     }
@@ -113,6 +112,34 @@ function deleteCultiveraOrderSyncTriggers() {
   });
 }
 
+function fetchCultiveraExportValues_() {
+  const standardPayload = getCultiveraExportPayload_();
+  const standardValues = responseToSheetValues_(
+    fetchCultiveraExport_(standardPayload, 'Standard Cultivera export')
+  );
+
+  if (!getCultiveraIncludeCancelledOrders_()) {
+    return standardValues;
+  }
+
+  const cancelledPayload = getCultiveraExportPayload_();
+  const payloadChanges = applyCultiveraCancelledOrderSetting_(cancelledPayload, true);
+  Logger.log(
+    `${CULTIVERA_INCLUDE_CANCELLED_SETTING_LABEL} enabled. ` +
+    `Cancelled export payload adjustments: ${payloadChanges.length ? payloadChanges.join('; ') : 'none detected'}`
+  );
+
+  if (!payloadChanges.length) {
+    Logger.log('Cancelled export skipped because the stored payload did not expose a cancelled-order filter.');
+    return standardValues;
+  }
+
+  const cancelledValues = responseToSheetValues_(
+    fetchCultiveraExport_(cancelledPayload, 'Cancelled Cultivera export')
+  );
+  return combineCultiveraSheetValues_([standardValues, cancelledValues]);
+}
+
 function getCultiveraIncludeCancelledOrders_() {
   const sheet = getOrCreateCultiveraConfigSheet_();
   const value = sheet.getRange('B2').getValue();
@@ -140,34 +167,27 @@ function getOrCreateCultiveraConfigSheet_() {
   return sheet;
 }
 
-function fetchCultiveraExport_() {
-  let response = fetchCultiveraExportWithToken_(getCultiveraBearerToken_());
+function fetchCultiveraExport_(payload, label) {
+  const exportLabel = label || 'Cultivera export';
+  let response = fetchCultiveraExportWithToken_(getCultiveraBearerToken_(), payload);
   if (response.getResponseCode() === 401 && canRefreshCultiveraToken_()) {
-    Logger.log('Cultivera export returned HTTP 401. Refreshing bearer token and retrying once.');
-    response = fetchCultiveraExportWithToken_(refreshCultiveraBearerToken_());
+    Logger.log(`${exportLabel} returned HTTP 401. Refreshing bearer token and retrying once.`);
+    response = fetchCultiveraExportWithToken_(refreshCultiveraBearerToken_(), payload);
   }
 
   const status = response.getResponseCode();
   if (status < 200 || status >= 300) {
-    throw new Error(`Cultivera export failed with HTTP ${status}: ${redactedTextPreview_(response, 500)}`);
+    throw new Error(`${exportLabel} failed with HTTP ${status}: ${redactedTextPreview_(response, 500)}`);
   }
   return response;
 }
 
-function fetchCultiveraExportWithToken_(token) {
-  const payload = getCultiveraExportPayload_();
-  const includeCancelled = getCultiveraIncludeCancelledOrders_();
-  const payloadChanges = applyCultiveraCancelledOrderSetting_(payload, includeCancelled);
-  if (includeCancelled) {
-    Logger.log(
-      `${CULTIVERA_INCLUDE_CANCELLED_SETTING_LABEL} enabled. ` +
-      `Payload adjustments: ${payloadChanges.length ? payloadChanges.join('; ') : 'none detected'}`
-    );
-  }
+function fetchCultiveraExportWithToken_(token, payload) {
+  const exportPayload = payload || getCultiveraExportPayload_();
   return UrlFetchApp.fetch(CULTIVERA_EXPORT_URL, {
     method: 'post',
     contentType: 'application/json;charset=UTF-8',
-    payload: JSON.stringify(payload),
+    payload: JSON.stringify(exportPayload),
     headers: cultiveraHeaders_(token),
     muteHttpExceptions: true
   });
@@ -241,6 +261,80 @@ function addCancelledStatusesToArray_(values) {
     }
   });
   return added;
+}
+
+function combineCultiveraSheetValues_(valueSets) {
+  const tables = (valueSets || []).filter(values => values && values.length && values[0] && values[0].length);
+  if (!tables.length) {
+    return [];
+  }
+  if (tables.length === 1) {
+    return dedupeCultiveraSheetValues_(tables[0]);
+  }
+
+  const combinedHeaders = [];
+  tables.forEach(values => {
+    values[0].forEach(header => {
+      const headerName = String(header || '').trim();
+      if (headerName && !combinedHeaders.includes(headerName)) {
+        combinedHeaders.push(headerName);
+      }
+    });
+  });
+
+  const combinedRows = [];
+  tables.forEach(values => {
+    const sourceHeaders = values[0].map(header => String(header || '').trim());
+    values.slice(1).forEach(row => {
+      const rowByHeader = {};
+      sourceHeaders.forEach((header, i) => {
+        if (header) {
+          rowByHeader[header] = row[i];
+        }
+      });
+      combinedRows.push(combinedHeaders.map(header => {
+        const value = rowByHeader[header];
+        return value === undefined ? '' : value;
+      }));
+    });
+  });
+
+  const deduped = dedupeCultiveraSheetValues_([combinedHeaders, ...combinedRows]);
+  Logger.log(
+    `Combined Cultivera exports: ${tables.map(values => Math.max(0, values.length - 1)).join(' + ')} rows ` +
+    `=> ${Math.max(0, deduped.length - 1)} rows after exact duplicate removal.`
+  );
+  return deduped;
+}
+
+function dedupeCultiveraSheetValues_(values) {
+  if (!values || values.length <= 2) {
+    return values || [];
+  }
+  const headers = values[0];
+  const seen = {};
+  const rows = [];
+  values.slice(1).forEach(row => {
+    const key = row.map(normalizeCultiveraSheetValueForDedupe_).join('\u001f');
+    if (!seen[key]) {
+      seen[key] = true;
+      rows.push(row);
+    }
+  });
+  if (rows.length !== values.length - 1) {
+    Logger.log(`Removed ${values.length - 1 - rows.length} exact duplicate Cultivera rows.`);
+  }
+  return [headers, ...rows];
+}
+
+function normalizeCultiveraSheetValueForDedupe_(value) {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value).trim();
 }
 
 function getCultiveraBearerToken_() {
