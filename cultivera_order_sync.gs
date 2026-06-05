@@ -107,12 +107,16 @@ function fetchCultiveraExportWithToken_(token) {
 }
 
 function getCultiveraBearerToken_() {
+  const props = PropertiesService.getScriptProperties();
+  const token = props.getProperty(CULTIVERA_PROP_TOKEN);
+  if (token) {
+    return normalizeBearerToken_(token);
+  }
+
   if (canRefreshCultiveraToken_()) {
     return refreshCultiveraBearerToken_();
   }
 
-  const props = PropertiesService.getScriptProperties();
-  const token = props.getProperty(CULTIVERA_PROP_TOKEN);
   if (!token) {
     throw new Error(
       `Missing Script Property: ${CULTIVERA_PROP_TOKEN}. ` +
