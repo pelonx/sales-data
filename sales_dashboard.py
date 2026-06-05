@@ -5649,6 +5649,15 @@ with tab_orders:
     _all_dates = ord_df["Submitted Date"].dropna()
     _min_date = _all_dates.min().date() if not _all_dates.empty else datetime.now().date()
     _max_date = _all_dates.max().date() if not _all_dates.empty else datetime.now().date()
+    _today = datetime.now().date()
+    _current_month_start = _today.replace(day=1)
+    _current_month_end = pd.Period(pd.Timestamp(_today), freq="M").to_timestamp(how="end").date()
+    _order_from_default = max(_min_date, _current_month_start)
+    _order_to_default = min(_max_date, _current_month_end)
+    if _order_from_default > _order_to_default:
+        _latest_order_month_start = _max_date.replace(day=1)
+        _order_from_default = max(_min_date, _latest_order_month_start)
+        _order_to_default = _max_date
 
     released_source = ord_df.copy()
 
@@ -5668,8 +5677,22 @@ with tab_orders:
     fc1, fc2, fc3, _ = st.columns([1, 1, 1, 1])
     status_opts = ["All"] + sorted(ord_df["Status"].dropna().unique().tolist())
     status_filter = fc1.selectbox("Status", status_opts, key="ord_status")
-    date_from = fc2.date_input("From", value=_min_date, min_value=_min_date, max_value=_max_date, key="ord_from")
-    date_to   = fc3.date_input("To",   value=_max_date, min_value=_min_date, max_value=_max_date, key="ord_to")
+    for _order_date_key, _order_date_default in (
+        ("ord_from", _order_from_default),
+        ("ord_to", _order_to_default),
+    ):
+        _order_existing_date = st.session_state.get(_order_date_key)
+        try:
+            _order_date_outside_range = (
+                _order_existing_date is not None
+                and (_order_existing_date < _min_date or _order_existing_date > _max_date)
+            )
+        except TypeError:
+            _order_date_outside_range = True
+        if _order_date_outside_range:
+            st.session_state[_order_date_key] = _order_date_default
+    date_from = fc2.date_input("From", value=_order_from_default, min_value=_min_date, max_value=_max_date, key="ord_from")
+    date_to   = fc3.date_input("To",   value=_order_to_default,   min_value=_min_date, max_value=_max_date, key="ord_to")
 
     view = ord_df.copy()
     if status_filter != "All":
