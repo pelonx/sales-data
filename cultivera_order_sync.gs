@@ -1,12 +1,15 @@
 const CULTIVERA_SPREADSHEET_ID = '1kY5e6SXd7eQ7GJx-jg6M1R60WCCZ9I_25Eb7ZmuDKHw';
 const CULTIVERA_DATA_SHEET_NAME = 'Cultivera Data';
 const CULTIVERA_SYNC_LOG_SHEET_NAME = 'Cultivera Sync Log';
+const CULTIVERA_CONFIG_SHEET_NAME = 'Cultivera Sync Config';
 const CULTIVERA_AUTH_URL = 'https://api-wa.cultiverapro.com/api/v1/auth/sign-in';
 const CULTIVERA_EXPORT_URL = 'https://api-wa.cultiverapro.com/api/v1/Orders/export-order-details-to-excel';
 const CULTIVERA_TRANSACTION_STATUS_URL_PREFIX = 'https://api-wa.cultiverapro.com/api/v1/transactions/status/';
 const CULTIVERA_TRANSACTION_POLL_ATTEMPTS = 12;
 const CULTIVERA_TRANSACTION_POLL_SLEEP_MS = 5000;
 const CULTIVERA_SIGN_IN_RETRY_SLEEP_MS = 5000;
+const CULTIVERA_INCLUDE_CANCELLED_SETTING_LABEL = 'Include Cancelled Orders';
+const CULTIVERA_CANCELLED_ORDER_STATUSES = ['Cancelled'];
 
 const CULTIVERA_PROP_TOKEN = 'CULTIVERA_BEARER_TOKEN';
 const CULTIVERA_PROP_USERNAME = 'CULTIVERA_USERNAME';
@@ -19,13 +22,23 @@ function checkCultiveraSyncSetup() {
   const credentials = getCultiveraCredentials_();
   const spreadsheet = SpreadsheetApp.openById(CULTIVERA_SPREADSHEET_ID);
   const sheet = getOrCreateCultiveraSheet_(CULTIVERA_DATA_SHEET_NAME);
+  const includeCancelled = getCultiveraIncludeCancelledOrders_();
   Logger.log(`Spreadsheet: ${spreadsheet.getName()}`);
   Logger.log(`Target sheet: ${sheet.getName()}; rows: ${sheet.getLastRow()}; columns: ${sheet.getLastColumn()}`);
+  Logger.log(`${CULTIVERA_CONFIG_SHEET_NAME}: ${CULTIVERA_INCLUDE_CANCELLED_SETTING_LABEL} = ${includeCancelled}`);
   Logger.log(`${CULTIVERA_PROP_TOKEN} configured: ${Boolean(props.getProperty(CULTIVERA_PROP_TOKEN))}`);
   Logger.log(`${CULTIVERA_PROP_USERNAME} configured: ${Boolean(credentials.username)}; length: ${credentials.username.length}`);
   Logger.log(`${CULTIVERA_PROP_PASSWORD} configured: ${Boolean(credentials.password)}; length: ${credentials.password.length}`);
   Logger.log(`${CULTIVERA_PROP_PAYLOAD} configured: ${Boolean(props.getProperty(CULTIVERA_PROP_PAYLOAD))}`);
   Logger.log(`${CULTIVERA_PROP_TZO}: ${props.getProperty(CULTIVERA_PROP_TZO) || '-420 default'}`);
+}
+
+function setupCultiveraSyncConfig() {
+  const sheet = getOrCreateCultiveraConfigSheet_();
+  Logger.log(
+    `${CULTIVERA_CONFIG_SHEET_NAME} ready. ` +
+    `${CULTIVERA_INCLUDE_CANCELLED_SETTING_LABEL}: ${sheet.getRange('B2').getValue()}`
+  );
 }
 
 function testCultiveraSignIn() {
@@ -100,6 +113,33 @@ function deleteCultiveraOrderSyncTriggers() {
   });
 }
 
+function getCultiveraIncludeCancelledOrders_() {
+  const sheet = getOrCreateCultiveraConfigSheet_();
+  const value = sheet.getRange('B2').getValue();
+  return value === true || ['true', 'yes', 'y', '1'].includes(String(value).trim().toLowerCase());
+}
+
+function getOrCreateCultiveraConfigSheet_() {
+  const sheet = getOrCreateCultiveraSheet_(CULTIVERA_CONFIG_SHEET_NAME);
+  const currentLabel = String(sheet.getRange('A2').getValue() || '').trim();
+  if (sheet.getRange('A1').getValue() !== 'Setting') {
+    sheet.getRange('A1:B1').setValues([['Setting', 'Value']]);
+    sheet.setFrozenRows(1);
+  }
+  if (currentLabel !== CULTIVERA_INCLUDE_CANCELLED_SETTING_LABEL) {
+    sheet.getRange('A2').setValue(CULTIVERA_INCLUDE_CANCELLED_SETTING_LABEL);
+  }
+  if (sheet.getRange('B2').isBlank()) {
+    sheet.getRange('B2').setValue(false);
+  }
+  sheet.getRange('B2').insertCheckboxes();
+  sheet.getRange('B2').setNote(
+    'When checked, sync attempts to add Cancelled orders to the Cultivera export payload.'
+  );
+  sheet.autoResizeColumns(1, 2);
+  return sheet;
+}
+
 function fetchCultiveraExport_() {
   let response = fetchCultiveraExportWithToken_(getCultiveraBearerToken_());
   if (response.getResponseCode() === 401 && canRefreshCultiveraToken_()) {
@@ -116,6 +156,14 @@ function fetchCultiveraExport_() {
 
 function fetchCultiveraExportWithToken_(token) {
   const payload = getCultiveraExportPayload_();
+  const includeCancelled = getCultiveraIncludeCancelledOrders_();
+  const payloadChanges = applyCultiveraCancelledOrderSetting_(payload, includeCancelled);
+  if (includeCancelled) {
+    Logger.log(
+      `${CULTIVERA_INCLUDE_CANCELLED_SETTING_LABEL} enabled. ` +
+      `Payload adjustments: ${payloadChanges.length ? payloadChanges.join('; ') : 'none detected'}`
+    );
+  }
   return UrlFetchApp.fetch(CULTIVERA_EXPORT_URL, {
     method: 'post',
     contentType: 'application/json;charset=UTF-8',
@@ -123,6 +171,76 @@ function fetchCultiveraExportWithToken_(token) {
     headers: cultiveraHeaders_(token),
     muteHttpExceptions: true
   });
+}
+
+function applyCultiveraCancelledOrderSetting_(payload, includeCancelled) {
+  if (!includeCancelled || payload === null || typeof payload !== 'object') {
+    return [];
+  }
+  const changes = [];
+  patchCultiveraCancelledOrderValue_(payload, 'payload', false, changes);
+  return changes;
+}
+
+function patchCultiveraCancelledOrderValue_(value, path, insideStatusFilter, changes) {
+  if (value === null || value === undefined) {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => {
+      patchCultiveraCancelledOrderValue_(item, `${path}[${i}]`, insideStatusFilter, changes);
+    });
+    return;
+  }
+  if (typeof value !== 'object') {
+    return;
+  }
+
+  Object.keys(value).forEach(key => {
+    const child = value[key];
+    const childPath = `${path}.${key}`;
+    const keyLooksCancelled = /cancell?ed|cancelled|canceled/i.test(key);
+    const keyLooksStatus = /status/i.test(key);
+    const childIsStatusFilter = insideStatusFilter || keyLooksStatus;
+
+    if (keyLooksCancelled && typeof child === 'boolean') {
+      if (/exclude|hide|omit|without/i.test(key)) {
+        if (child !== false) {
+          value[key] = false;
+          changes.push(`${childPath}=false`);
+        }
+      } else if (/include|show|with|allow/i.test(key) || insideStatusFilter || keyLooksStatus) {
+        if (child !== true) {
+          value[key] = true;
+          changes.push(`${childPath}=true`);
+        }
+      }
+    }
+
+    if (keyLooksStatus && Array.isArray(child)) {
+      const added = addCancelledStatusesToArray_(child);
+      if (added.length) {
+        changes.push(`${childPath} += ${added.join(', ')}`);
+      }
+    }
+
+    patchCultiveraCancelledOrderValue_(child, childPath, childIsStatusFilter, changes);
+  });
+}
+
+function addCancelledStatusesToArray_(values) {
+  if (!values.length || !values.every(value => typeof value === 'string')) {
+    return [];
+  }
+  const lowerValues = values.map(value => value.trim().toLowerCase());
+  const added = [];
+  CULTIVERA_CANCELLED_ORDER_STATUSES.forEach(status => {
+    if (!lowerValues.includes(status.toLowerCase())) {
+      values.push(status);
+      added.push(status);
+    }
+  });
+  return added;
 }
 
 function getCultiveraBearerToken_() {
