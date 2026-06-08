@@ -67,6 +67,7 @@ DATA_DIR = Path("Data")
 DB_PATH = DATA_DIR / "sales_dashboard.sqlite3"
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1kY5e6SXd7eQ7GJx-jg6M1R60WCCZ9I_25Eb7ZmuDKHw/edit?usp=sharing"
 DEFAULT_SHEET_GID = "0"
+DEFAULT_TERRITORY_LOCATION_GID = "1421425539"
 DEFAULT_TERRITORY_REP_GID = "1653796501"
 CONTACT_LOG_WORKSHEET = "Contact Log"
 CONTACT_LOG_COLUMNS = [
@@ -398,6 +399,20 @@ def contact_worksheet_name():
 
 def store_contact_worksheet_name():
     return secret_value("store_contact_worksheet", STORE_CONTACT_WORKSHEET) or STORE_CONTACT_WORKSHEET
+
+def territory_location_sheet_url():
+    return (
+        secret_value("territory_location_sheet_url")
+        or get_setting("location_sheet_url")
+        or DEFAULT_SHEET_URL
+    )
+
+def territory_location_sheet_gid():
+    return (
+        secret_value("territory_location_sheet_gid")
+        or get_setting("location_sheet_gid")
+        or DEFAULT_TERRITORY_LOCATION_GID
+    )
 
 def is_totals_col(header, values, other_cols):
     header_text = str(header).strip()
@@ -1253,6 +1268,46 @@ def load_location_sheet_as_df(sheet_url, gid="0"):
         raise ValueError("The location sheet is empty.")
     return normalize_store_locations(raw), raw.shape
 
+def load_and_save_location_sheet(sheet_url, gid="0", clear_cache=False):
+    sheet_url = str(sheet_url or "").strip()
+    gid = str(gid or "0").strip() or "0"
+    if not sheet_url:
+        raise ValueError("Enter a location sheet URL.")
+    if clear_cache:
+        load_location_sheet_as_df.clear()
+    sheet_locations, sheet_shape = load_location_sheet_as_df(sheet_url, gid)
+    saved_count = save_store_locations(sheet_locations)
+    set_setting("location_sheet_url", sheet_url)
+    set_setting("location_sheet_gid", gid)
+    return saved_count, sheet_shape
+
+def maybe_auto_load_territory_locations(locations):
+    if locations is not None and not locations.empty:
+        return locations, "", ""
+    source_url = territory_location_sheet_url()
+    source_gid = territory_location_sheet_gid()
+    source_signature = f"{source_url}|{source_gid}"
+    if st.session_state.get("territory_location_auto_loaded_source") == source_signature:
+        return locations, "", ""
+    st.session_state["territory_location_auto_loaded_source"] = source_signature
+    if not source_url:
+        return locations, "", ""
+
+    try:
+        saved_count, sheet_shape = load_and_save_location_sheet(source_url, source_gid)
+        refreshed_locations = load_store_locations()
+    except Exception as exc:
+        return (
+            locations,
+            "",
+            f"Could not auto-load territory locations from the configured sheet: {exc}",
+        )
+    return (
+        refreshed_locations,
+        f"Loaded {saved_count} territory locations from {sheet_shape[0]} source rows.",
+        "",
+    )
+
 def normalize_territory_rep_assignments(raw_df):
     if raw_df is None or raw_df.empty:
         return pd.DataFrame(columns=TERRITORY_REP_ASSIGNMENT_COLUMNS + ["License Key", "Store Key"])
@@ -1516,13 +1571,13 @@ def render_territory_location_data_panel(locations, coord_ready):
         with sheet_col:
             loc_sheet_url = st.text_input(
                 "Location Sheet URL",
-                value=get_setting("location_sheet_url", ""),
+                value=territory_location_sheet_url(),
                 key="territory_location_sheet_url",
                 placeholder="https://docs.google.com/spreadsheets/d/...",
             )
             loc_sheet_gid = st.text_input(
                 "Location Worksheet gid",
-                value=get_setting("location_sheet_gid", "0"),
+                value=territory_location_sheet_gid(),
                 key="territory_location_sheet_gid",
             )
             if st.button("Load Location Sheet", width="stretch", key="territory_load_location_sheet"):
@@ -1530,13 +1585,11 @@ def render_territory_location_data_panel(locations, coord_ready):
                     st.warning("Enter a location sheet URL.")
                 else:
                     try:
-                        load_location_sheet_as_df.clear()
-                        sheet_locations, sheet_shape = load_location_sheet_as_df(
-                            loc_sheet_url.strip(), loc_sheet_gid.strip() or "0"
+                        saved_count, sheet_shape = load_and_save_location_sheet(
+                            loc_sheet_url.strip(),
+                            loc_sheet_gid.strip() or "0",
+                            clear_cache=True,
                         )
-                        saved_count = save_store_locations(sheet_locations)
-                        set_setting("location_sheet_url", loc_sheet_url.strip())
-                        set_setting("location_sheet_gid", loc_sheet_gid.strip() or "0")
                     except Exception as exc:
                         st.error(f"Could not load location sheet: {exc}")
                     else:
@@ -5430,6 +5483,11 @@ with tab_territory:
         st.warning(st.session_state.pop("territory_warning"))
 
     locations = load_store_locations()
+    locations, auto_location_notice, auto_location_warning = maybe_auto_load_territory_locations(locations)
+    if auto_location_notice:
+        st.success(auto_location_notice)
+    if auto_location_warning:
+        st.warning(auto_location_warning)
     rep_assignments = pd.DataFrame(columns=TERRITORY_REP_ASSIGNMENT_COLUMNS + ["License Key", "Store Key"])
     try:
         rep_assignments, rep_shape = load_territory_rep_assignments()

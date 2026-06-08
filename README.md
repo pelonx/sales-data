@@ -64,6 +64,13 @@ Optional columns are `Google Place ID`, `Geocoded At`, and `Geocode Status`. Add
 
 Retailer-market columns such as `Sales Last Month`, `Sales Rank`, `County`, `Flowers & Prerolls`, `Concentrates & Cartridges`, `Edibles, Topicals, Infused, etc.`, and `UBI` are preserved when present and shown in the Territory Map analytics table.
 
+When no saved locations are present, the app auto-loads locations from the shared Google Sheet tab with gid `1421425539`. Override this with Streamlit secrets:
+
+```toml
+territory_location_sheet_url = "https://docs.google.com/spreadsheets/d/..."
+territory_location_sheet_gid = "1421425539"
+```
+
 The app also loads territory rep assignments from the shared Google Sheet tab with gid `1653796501`. Expected columns are `License`, `Store Name`, `Territory Rep`, and `Territory`; common alternatives such as `License #`, `Store`, `Sales Rep`, `Rep`, `Region`, and `Area` are accepted. License matches are used first, with store-name matching as a fallback.
 
 ### Geocoding retailer addresses in Google Sheets
