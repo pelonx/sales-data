@@ -4616,6 +4616,7 @@ with tab_contact:
     _logged_stores: set = set()
     _logged_contact_keys: set = set()
     _logged_contact_key_list: list = []
+    _contact_history_rows: list = []
     if not _saved_log.empty:
         _saved_log = _saved_log.copy()
         _saved_log["_saved_sort"] = pd.to_datetime(_saved_log["Saved At"], errors="coerce")
@@ -4623,7 +4624,15 @@ with tab_contact:
         _logged_lics = {k for k in _saved_log["License"].apply(_lic_key) if k}
         _logged_stores = {k for k in _saved_log["Store Name"].apply(store_match_key) if k}
         for _, _r in _saved_log.iterrows():
-            _logged_contact_keys.update(contact_match_keys(_r.get("License", ""), _r.get("Store Name", "")))
+            _row_match_keys = contact_match_keys(_r.get("License", ""), _r.get("Store Name", ""))
+            _logged_contact_keys.update(_row_match_keys)
+            _contact_history_rows.append({
+                "row": _r.drop(labels=["_saved_sort"], errors="ignore").to_dict(),
+                "sort": _r.get("_saved_sort"),
+                "license_key": _lic_key(_r.get("License", "")),
+                "store_key": store_match_key(_r.get("Store Name", "")),
+                "match_keys": _row_match_keys,
+            })
         _logged_contact_key_list = sorted(_logged_contact_keys, key=len, reverse=True)
         _contact_month_key = canonical_month_label(contact_month)
         _saved_month_keys = _saved_log["Month"].apply(canonical_month_label)
@@ -4656,6 +4665,50 @@ with tab_contact:
                 for saved_key in _logged_contact_key_list
             )
         )
+
+    def _contact_history_for_lic(lic):
+        lic_key = _lic_key(lic)
+        store_key = _store_key_for_lic(lic)
+        match_keys = _match_keys_for_lic(lic)
+        matches = []
+
+        for item in _contact_history_rows:
+            item_keys = item["match_keys"]
+            direct_match = (
+                (lic_key and lic_key == item["license_key"])
+                or (store_key and store_key == item["store_key"])
+                or bool(match_keys & item_keys)
+            )
+            related_match = any(
+                related_match_key(match_key, saved_key, min_len=5)
+                for match_key in match_keys
+                for saved_key in item_keys
+            )
+            if direct_match or related_match:
+                matches.append(item)
+
+        if not matches:
+            return pd.DataFrame(columns=CONTACT_LOG_COLUMNS)
+
+        def _history_sort_key(item):
+            sort_value = item.get("sort")
+            if pd.isna(sort_value):
+                return 0.0
+            try:
+                return pd.Timestamp(sort_value).timestamp()
+            except Exception:
+                return 0.0
+
+        matches.sort(key=_history_sort_key, reverse=True)
+        return pd.DataFrame([item["row"] for item in matches])
+
+    def _contact_history_display(history_df):
+        columns = [
+            "Month", "Revenue", "Date Contacted", "Initials", "Person Contacted",
+            "Contact Method", "Commitment", "Cadence", "Committed Amount",
+            "Next Outreach", "Next Outreach Date", "Notes", "Saved At",
+        ]
+        return history_df[[col for col in columns if col in history_df.columns]].fillna("")
 
     def _saved(lic, field, default=""):
         v = _saved_entry(lic).get(field, default)
@@ -4782,6 +4835,22 @@ with tab_contact:
         has_saved = _has_logged_contact(lic)
         label = f"{'✅ ' if has_saved else ''}#{rank}  {store_name}  ·  {lic}  ·  {revenue}"
         with st.expander(label):
+            contact_history = _contact_history_for_lic(lic)
+            st.markdown("**Contact History**")
+            if contact_history.empty:
+                st.caption("No contact log entries for this store yet.")
+            else:
+                st.caption(f"{len(contact_history)} entr{'y' if len(contact_history) == 1 else 'ies'}")
+                st.dataframe(
+                    _contact_history_display(contact_history),
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Notes": st.column_config.TextColumn(width="large"),
+                        "Saved At": st.column_config.TextColumn("Saved At"),
+                    },
+                )
+
             with st.form(f"store_contact_form_{lic}", clear_on_submit=False):
                 _date_default = today_date
                 _date_str = _saved(lic, "Date Contacted")
