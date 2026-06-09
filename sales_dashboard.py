@@ -893,8 +893,8 @@ def _load_sales_goals(month_key):
         "notes": {str(k): str(v or "") for k, v in notes.items()},
     }
 
-def _save_sales_goals(month_key, goals):
-    normalized = {
+def _normalize_sales_goals(goals):
+    return {
         "eom": round(_clean_goal_amount(goals.get("eom", 0)), 2),
         "weeks": {
             str(k): round(_clean_goal_amount(v), 2)
@@ -907,6 +907,9 @@ def _save_sales_goals(month_key, goals):
             if str(v or "").strip()
         },
     }
+
+def _save_sales_goals(month_key, goals):
+    normalized = _normalize_sales_goals(goals)
     set_setting(_sales_goal_key(month_key), json.dumps(normalized, sort_keys=True))
 
 def _month_label(month_key):
@@ -6927,7 +6930,7 @@ with tab_goals:
             goal_month_options.index(current_month_key)
             if current_month_key in goal_month_options else 0
         )
-        goal_controls = st.columns([1, 1, 2])
+        goal_controls = st.columns([1, 3])
         goal_month_key = goal_controls[0].selectbox(
             "Month",
             goal_month_options,
@@ -6938,16 +6941,10 @@ with tab_goals:
         goal_month_start, goal_month_end = _month_bounds(goal_month_key)
         goal_weeks = _month_weeks(goal_month_start, goal_month_end)
         saved_goals = _load_sales_goals(goal_month_key)
+        if st.session_state.get("sales_goal_notice"):
+            st.success(st.session_state.pop("sales_goal_notice"))
 
-        eom_goal = goal_controls[1].number_input(
-            "EOM Goal",
-            min_value=0.0,
-            value=float(saved_goals.get("eom", 0)),
-            step=1000.0,
-            format="%.0f",
-            key=f"goal_eom_{goal_month_key}",
-        )
-        goal_controls[2].markdown(
+        goal_controls[1].markdown(
             "<div style='height:1.85rem'></div>"
             f"<div style='font-size:1.8rem;font-weight:700'>{_month_label(goal_month_key)}</div>",
             unsafe_allow_html=True,
@@ -6961,18 +6958,31 @@ with tab_goals:
             }
             for week in goal_weeks
         ]
-        weekly_goal_input = st.data_editor(
-            pd.DataFrame(weekly_goal_rows),
-            width="stretch",
-            hide_index=True,
-            key=f"goal_weekly_editor_{goal_month_key}",
-            disabled=["Week"],
-            column_config={
-                "Week": st.column_config.TextColumn("Week"),
-                "Goal": st.column_config.NumberColumn("Weekly Goal", min_value=0.0, step=500.0, format="$%.0f"),
-                "Notes": st.column_config.TextColumn("Notes"),
-            },
-        )
+        with st.form(f"sales_goal_form_{goal_month_key}", clear_on_submit=False):
+            form_cols = st.columns([1, 3])
+            eom_goal = form_cols[0].number_input(
+                "EOM Goal",
+                min_value=0.0,
+                value=float(saved_goals.get("eom", 0)),
+                step=1000.0,
+                format="%.0f",
+                key=f"goal_eom_{goal_month_key}",
+            )
+            form_cols[1].caption("Edit the month and all weekly goals, then save once.")
+            weekly_goal_input = st.data_editor(
+                pd.DataFrame(weekly_goal_rows),
+                width="stretch",
+                hide_index=True,
+                key=f"goal_weekly_editor_{goal_month_key}",
+                disabled=["Week"],
+                column_config={
+                    "Week": st.column_config.TextColumn("Week"),
+                    "Goal": st.column_config.NumberColumn("Weekly Goal", min_value=0.0, step=500.0, format="$%.0f"),
+                    "Notes": st.column_config.TextColumn("Notes"),
+                },
+            )
+            save_goals = st.form_submit_button("Save Goals", type="primary", width="stretch")
+
         weekly_goals = {}
         weekly_notes = {}
         for week, row in zip(goal_weeks, weekly_goal_input.to_dict("records")):
@@ -6984,34 +6994,14 @@ with tab_goals:
                 weekly_notes[week["id"]] = note
 
         current_goals = {"eom": _clean_goal_amount(eom_goal), "weeks": weekly_goals, "notes": weekly_notes}
-        saved_normalized = {
-            "eom": round(_clean_goal_amount(saved_goals.get("eom", 0)), 2),
-            "weeks": {
-                str(k): round(_clean_goal_amount(v), 2)
-                for k, v in saved_goals.get("weeks", {}).items()
-                if _clean_goal_amount(v) > 0
-            },
-            "notes": {
-                str(k): str(v or "").strip()
-                for k, v in saved_goals.get("notes", {}).items()
-                if str(v or "").strip()
-            },
-        }
-        current_normalized = {
-            "eom": round(_clean_goal_amount(current_goals.get("eom", 0)), 2),
-            "weeks": {
-                str(k): round(_clean_goal_amount(v), 2)
-                for k, v in current_goals.get("weeks", {}).items()
-                if _clean_goal_amount(v) > 0
-            },
-            "notes": {
-                str(k): str(v or "").strip()
-                for k, v in current_goals.get("notes", {}).items()
-                if str(v or "").strip()
-            },
-        }
-        if current_normalized != saved_normalized:
+        current_normalized = _normalize_sales_goals(current_goals)
+        saved_normalized = _normalize_sales_goals(saved_goals)
+        if save_goals:
             _save_sales_goals(goal_month_key, current_normalized)
+            st.session_state["sales_goal_notice"] = f"Saved goals for {_month_label(goal_month_key)}."
+            st.rerun()
+        elif current_normalized != saved_normalized:
+            st.caption("Goal changes are not saved yet. Use Save Goals to record all values.")
 
         goal_daily = _build_goal_daily_frame(
             goal_order_df,
