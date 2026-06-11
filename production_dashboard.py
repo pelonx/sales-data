@@ -166,6 +166,15 @@ def current_ytd_date_bounds(date_values):
     data_max = dates.max().date()
     return min(data_min, ytd_start), max(data_max, today), ytd_start, today
 
+def format_date_range_value(date_value):
+    return f"{date_value:%b} {date_value.day}, {date_value.year}"
+
+def show_active_date_range(start_date, end_date):
+    st.caption(
+        "Date range: "
+        f"{format_date_range_value(start_date)} to {format_date_range_value(end_date)}"
+    )
+
 def product_type_multiselect(source_df: pd.DataFrame, key: str) -> list[str]:
     products = sorted(
         source_df["Product"].dropna().replace("nan", pd.NA).dropna().unique().tolist()
@@ -280,7 +289,15 @@ def render_costs_tab(
 
     companies = sorted(costs_df["Company"].dropna().unique().tolist())
     if selected_companies is None:
-        selected_companies = companies
+        selected_companies = []
+        if companies:
+            st.caption("Company")
+            company_cols = st.columns(len(companies))
+            for col, company in zip(company_cols, companies):
+                key_part = re.sub(r"[^a-z0-9]+", "_", company.casefold()).strip("_")
+                if col.checkbox(company, value=True, key=f"cost_company_{key_part}"):
+                    selected_companies.append(company)
+
     min_date, max_date, from_default, to_default = current_ytd_date_bounds(valid_months)
     c1, c2 = st.columns(2)
     from_date = c1.date_input(
@@ -298,6 +315,7 @@ def render_costs_tab(
         key="cost_to",
     )
     start_date, end_date = sorted([from_date, to_date])
+    show_active_date_range(start_date, end_date)
 
     costs_view = costs_df[
         costs_df["Company"].isin(selected_companies)
@@ -1018,16 +1036,6 @@ sel_facility = st.radio(
     key="sel_facility",
 )
 
-_cost_companies = sorted(costs_df["Company"].dropna().unique().tolist()) if not costs_df.empty else []
-selected_cost_companies = _cost_companies
-if _cost_companies:
-    st.caption("Company")
-    selected_cost_companies = []
-    _company_cols = st.columns(len(_cost_companies))
-    for col, company in zip(_company_cols, _cost_companies):
-        key_part = re.sub(r"[^a-z0-9]+", "_", company.casefold()).strip("_")
-        if col.checkbox(company, value=True, key=f"global_company_{key_part}"):
-            selected_cost_companies.append(company)
 st.divider()
 
 # Apply facility filter for display
@@ -1075,13 +1083,15 @@ with tab_brand:
         sel_b_type  = bf2.selectbox("Product", _b_types,  key="bs_type")
         b_from = bf3.date_input("From", value=_b_from_default, min_value=_b_min, max_value=_b_max, key="bs_from")
         b_to   = bf4.date_input("To",   value=_b_to_default,   min_value=_b_min, max_value=_b_max, key="bs_to")
+        b_start, b_end = sorted([b_from, b_to])
+        show_active_date_range(b_start, b_end)
 
         bview = named_df.copy()
         if sel_b_brand != "All":
             bview = bview[bview["Brand"] == sel_b_brand]
         if sel_b_type != "All":
             bview = bview[bview["Product"] == sel_b_type]
-        _b_in_range = bview["Transfer Date"].dt.date.between(b_from, b_to).fillna(True)
+        _b_in_range = bview["Transfer Date"].dt.date.between(b_start, b_end).fillna(True)
         bview = bview[_b_in_range]
 
         bview_g = bview[bview["Units UOM"] == "Grams"]
@@ -1259,13 +1269,15 @@ with tab_wholesale:
         sel_w_type   = wf2.selectbox("Product",  _w_types,   key="ws_type")
         w_from = wf3.date_input("From", value=_w_from_default, min_value=_w_min, max_value=_w_max, key="ws_from")
         w_to   = wf4.date_input("To",   value=_w_to_default,   min_value=_w_min, max_value=_w_max, key="ws_to")
+        w_start, w_end = sorted([w_from, w_to])
+        show_active_date_range(w_start, w_end)
 
         wview = ws_df.copy()
         if sel_w_vendor != "All":
             wview = wview[wview["Vendor"] == sel_w_vendor]
         if sel_w_type != "All":
             wview = wview[wview["Product"] == sel_w_type]
-        _w_in_range = wview["Transfer Date"].dt.date.between(w_from, w_to).fillna(True)
+        _w_in_range = wview["Transfer Date"].dt.date.between(w_start, w_end).fillna(True)
         wview = wview[_w_in_range]
 
         wview_g = wview[wview["Units UOM"] == "Grams"]
@@ -1374,13 +1386,14 @@ with tab_both:
         sel_c_type = cf2.selectbox("Product", _c_types, key="both_type")
         c_from = cf3.date_input("From", value=_c_from_default, min_value=_c_min, max_value=_c_max, key="both_from")
         c_to = cf4.date_input("To", value=_c_to_default, min_value=_c_min, max_value=_c_max, key="both_to")
+        c_start, c_end = sorted([c_from, c_to])
+        show_active_date_range(c_start, c_end)
 
         cview = combined_df.copy()
         if sel_c_sale_type != "All":
             cview = cview[cview["Sale Type"] == sel_c_sale_type]
         if sel_c_type != "All":
             cview = cview[cview["Product"] == sel_c_type]
-        c_start, c_end = sorted([c_from, c_to])
         _c_in_range = cview["Transfer Date"].dt.date.between(c_start, c_end).fillna(True)
         cview = cview[_c_in_range]
 
@@ -1525,4 +1538,4 @@ with tab_both:
 # ║  TAB — Costs                                                     ║
 # ╚══════════════════════════════════════════════════════════════════╝
 with tab_costs:
-    render_costs_tab(costs_df, costs_error, selected_cost_companies)
+    render_costs_tab(costs_df, costs_error)

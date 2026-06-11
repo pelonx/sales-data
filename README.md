@@ -63,6 +63,33 @@ order_sheet_name = "Cultivera Data"
 order_sheet_gid = "0"
 ```
 
+## GrowFlow report sync
+
+`growflow_report_sync.gs` connects to the GrowFlow Wholesale Partner API with Auth0 client credentials, runs a configured GraphQL query, flattens the returned `items` rows, and writes them to a tab in the shared Google Sheet.
+
+To install:
+
+1. Open the shared Google Sheet.
+2. Go to Extensions -> Apps Script.
+3. Add a new script file and paste `growflow_report_sync.gs`.
+4. In Project Settings -> Script Properties, set `GROWFLOW_CLIENT_ID` and `GROWFLOW_CLIENT_SECRET`.
+5. Run either `setupGrowFlowOrdersExampleConfig` or `setupGrowFlowInventoryExampleConfig`, then edit `GROWFLOW_GRAPHQL_VARIABLES_JSON` for the correct `licenseNumber`.
+6. Run `checkGrowFlowReportSyncSetup`, then `testGrowFlowGraphQLRequest`.
+7. Run `syncGrowFlowReportToSheet` once to write the sheet.
+8. Run `createGrowFlowHourlyTrigger` to refresh hourly.
+
+The main configurable properties are:
+
+```text
+GROWFLOW_GRAPHQL_QUERY
+GROWFLOW_GRAPHQL_VARIABLES_JSON
+GROWFLOW_TARGET_SHEET_NAME
+GROWFLOW_PAGINATION_FIELD
+GROWFLOW_ARRAY_EXPAND_PATH
+```
+
+`GROWFLOW_PAGINATION_FIELD` should match the GraphQL field with `totalCount` and `items`, such as `orders` or `inventories`. `GROWFLOW_ARRAY_EXPAND_PATH` is optional; for the orders example it is set to `lineItems` so each order line is written with the parent order fields. Access tokens are cached automatically in Script Properties and refreshed before expiry. The sync uses GrowFlow's max page size of 100 and respects `Retry-After` on HTTP 429 rate-limit responses.
+
 ## Territory map
 
 The Territory Map tab accepts a store-location CSV/XLSX upload or a Google Sheet with these columns:
