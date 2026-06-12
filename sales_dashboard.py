@@ -881,6 +881,15 @@ def _clean_goal_amount(value):
     except Exception:
         return 0.0
 
+def _clean_brand_goal_map(value):
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(brand): _clean_goal_amount(amount)
+        for brand, amount in value.items()
+        if _clean_goal_amount(amount) > 0
+    }
+
 def _load_sales_goals(month_key):
     raw = get_setting(_sales_goal_key(month_key), "{}")
     try:
@@ -889,13 +898,31 @@ def _load_sales_goals(month_key):
         data = {}
     weeks = data.get("weeks", {}) if isinstance(data.get("weeks", {}), dict) else {}
     notes = data.get("notes", {}) if isinstance(data.get("notes", {}), dict) else {}
+    brand_eom = data.get("brand_eom", {}) if isinstance(data.get("brand_eom", {}), dict) else {}
+    raw_brand_weeks = data.get("brand_weeks", {}) if isinstance(data.get("brand_weeks", {}), dict) else {}
+    brand_weeks = {
+        str(week_id): _clean_brand_goal_map(brand_map)
+        for week_id, brand_map in raw_brand_weeks.items()
+        if _clean_brand_goal_map(brand_map)
+    }
     return {
         "eom": _clean_goal_amount(data.get("eom", 0)),
         "weeks": {str(k): _clean_goal_amount(v) for k, v in weeks.items()},
+        "brand_eom": _clean_brand_goal_map(brand_eom),
+        "brand_weeks": brand_weeks,
         "notes": {str(k): str(v or "") for k, v in notes.items()},
     }
 
 def _normalize_sales_goals(goals):
+    brand_weeks = {}
+    for week_id, brand_map in (goals.get("brand_weeks", {}) or {}).items():
+        cleaned = _clean_brand_goal_map(brand_map)
+        if cleaned:
+            brand_weeks[str(week_id)] = {
+                str(brand): round(amount, 2)
+                for brand, amount in cleaned.items()
+                if amount > 0
+            }
     return {
         "eom": round(_clean_goal_amount(goals.get("eom", 0)), 2),
         "weeks": {
@@ -903,6 +930,12 @@ def _normalize_sales_goals(goals):
             for k, v in (goals.get("weeks", {}) or {}).items()
             if _clean_goal_amount(v) > 0
         },
+        "brand_eom": {
+            str(brand): round(amount, 2)
+            for brand, amount in _clean_brand_goal_map(goals.get("brand_eom", {})).items()
+            if amount > 0
+        },
+        "brand_weeks": brand_weeks,
         "notes": {
             str(k): str(v or "").strip()
             for k, v in (goals.get("notes", {}) or {}).items()
@@ -952,7 +985,7 @@ def _month_weeks(month_start, month_end):
         cursor = week_end + timedelta(days=1)
     return weeks
 
-def _build_goal_daily_frame(order_df, month_start, month_end, weeks, weekly_goals, eom_goal):
+def _build_goal_daily_frame(order_df, month_start, month_end, weeks, weekly_goals, eom_goal, brands=None):
     days = pd.date_range(month_start, month_end, freq="D")
     daily = pd.DataFrame({"Date": days})
     daily["Daily Sales"] = 0.0
@@ -961,6 +994,8 @@ def _build_goal_daily_frame(order_df, month_start, month_end, weeks, weekly_goal
         source = order_df.copy()
         if "Brand" in source.columns:
             source = source[source["Brand"] != "Bulk"]
+            if brands:
+                source = source[source["Brand"].isin(brands)]
         source["Submitted Date"] = pd.to_datetime(source["Submitted Date"], errors="coerce")
         source["Line Total"] = pd.to_numeric(source["Line Total"], errors="coerce").fillna(0)
         source = source[
@@ -7069,7 +7104,8 @@ with tab_goals:
             goal_month_options.index(current_month_key)
             if current_month_key in goal_month_options else 0
         )
-        goal_controls = st.columns([1, 3])
+        goal_brands = list(TERRITORY_BRANDS)
+        goal_controls = st.columns([1, 1, 2.5])
         goal_month_key = goal_controls[0].selectbox(
             "Month",
             goal_month_options,
@@ -7077,37 +7113,64 @@ with tab_goals:
             format_func=_month_label,
             key="goal_month",
         )
+        goal_brand_view = goal_controls[1].selectbox(
+            "Brand Filter",
+            ["All Brands"] + goal_brands,
+            key="goal_brand_filter",
+        )
+        selected_goal_brands = (
+            goal_brands if goal_brand_view == "All Brands" else [goal_brand_view]
+        )
+        goal_daily_brand_filter = None if goal_brand_view == "All Brands" else selected_goal_brands
         goal_month_start, goal_month_end = _month_bounds(goal_month_key)
         goal_weeks = _month_weeks(goal_month_start, goal_month_end)
         saved_goals = _load_sales_goals(goal_month_key)
         if st.session_state.get("sales_goal_notice"):
             st.success(st.session_state.pop("sales_goal_notice"))
 
-        goal_controls[1].markdown(
+        goal_controls[2].markdown(
             "<div style='height:1.85rem'></div>"
             f"<div style='font-size:1.8rem;font-weight:700'>{_month_label(goal_month_key)}</div>",
             unsafe_allow_html=True,
         )
 
+        saved_brand_eom = saved_goals.get("brand_eom", {})
+        saved_brand_weeks = saved_goals.get("brand_weeks", {})
         weekly_goal_rows = [
-            {
+            dict({
                 "Week": week["label"],
                 "Goal": _clean_goal_amount(saved_goals.get("weeks", {}).get(week["id"], 0)),
+                **{
+                    brand: _clean_goal_amount(
+                        saved_brand_weeks.get(week["id"], {}).get(brand, 0)
+                    )
+                    for brand in goal_brands
+                },
                 "Notes": saved_goals.get("notes", {}).get(week["id"], ""),
-            }
+            })
             for week in goal_weeks
         ]
         with st.form(f"sales_goal_form_{goal_month_key}", clear_on_submit=False):
-            form_cols = st.columns([1, 3])
-            eom_goal = form_cols[0].number_input(
-                "EOM Goal",
+            eom_cols = st.columns([1] * (len(goal_brands) + 1))
+            eom_goal = eom_cols[0].number_input(
+                "Total EOM Goal",
                 min_value=0.0,
                 value=float(saved_goals.get("eom", 0)),
                 step=1000.0,
                 format="%.0f",
                 key=f"goal_eom_{goal_month_key}",
             )
-            form_cols[1].caption("Edit the month and all weekly goals, then save once.")
+            brand_eom_inputs = {}
+            for idx, brand in enumerate(goal_brands, start=1):
+                brand_eom_inputs[brand] = eom_cols[idx].number_input(
+                    f"{brand} EOM",
+                    min_value=0.0,
+                    value=float(saved_brand_eom.get(brand, 0)),
+                    step=500.0,
+                    format="%.0f",
+                    key=f"goal_eom_{slugify(brand)}_{goal_month_key}",
+                )
+            st.caption("Edit total and brand goals, then save once.")
             weekly_goal_input = st.data_editor(
                 pd.DataFrame(weekly_goal_rows),
                 width="stretch",
@@ -7116,23 +7179,51 @@ with tab_goals:
                 disabled=["Week"],
                 column_config={
                     "Week": st.column_config.TextColumn("Week"),
-                    "Goal": st.column_config.NumberColumn("Weekly Goal", min_value=0.0, step=500.0, format="$%.0f"),
+                    "Goal": st.column_config.NumberColumn("Total Weekly Goal", min_value=0.0, step=500.0, format="$%.0f"),
+                    **{
+                        brand: st.column_config.NumberColumn(
+                            f"{brand} Weekly Goal",
+                            min_value=0.0,
+                            step=250.0,
+                            format="$%.0f",
+                        )
+                        for brand in goal_brands
+                    },
                     "Notes": st.column_config.TextColumn("Notes"),
                 },
             )
             save_goals = st.form_submit_button("Save Goals", type="primary", width="stretch")
 
         weekly_goals = {}
+        brand_eom_goals = {}
+        brand_week_goals = {}
         weekly_notes = {}
+        for brand, amount in brand_eom_inputs.items():
+            cleaned = _clean_goal_amount(amount)
+            if cleaned > 0:
+                brand_eom_goals[brand] = cleaned
         for week, row in zip(goal_weeks, weekly_goal_input.to_dict("records")):
             amount = _clean_goal_amount(row.get("Goal", 0))
             if amount > 0:
                 weekly_goals[week["id"]] = amount
+            brand_amounts = {}
+            for brand in goal_brands:
+                brand_amount = _clean_goal_amount(row.get(brand, 0))
+                if brand_amount > 0:
+                    brand_amounts[brand] = brand_amount
+            if brand_amounts:
+                brand_week_goals[week["id"]] = brand_amounts
             note = str(row.get("Notes", "") or "").strip()
             if note:
                 weekly_notes[week["id"]] = note
 
-        current_goals = {"eom": _clean_goal_amount(eom_goal), "weeks": weekly_goals, "notes": weekly_notes}
+        current_goals = {
+            "eom": _clean_goal_amount(eom_goal),
+            "weeks": weekly_goals,
+            "brand_eom": brand_eom_goals,
+            "brand_weeks": brand_week_goals,
+            "notes": weekly_notes,
+        }
         current_normalized = _normalize_sales_goals(current_goals)
         saved_normalized = _normalize_sales_goals(saved_goals)
         if save_goals:
@@ -7142,13 +7233,36 @@ with tab_goals:
         elif current_normalized != saved_normalized:
             st.caption("Goal changes are not saved yet. Use Save Goals to record all values.")
 
+        def _brand_week_goal_total(week_id, brands):
+            brand_map = brand_week_goals.get(week_id, {})
+            return sum(_clean_goal_amount(brand_map.get(brand, 0)) for brand in brands)
+
+        if goal_brand_view == "All Brands":
+            total_brand_eom_goal = sum(_clean_goal_amount(brand_eom_goals.get(brand, 0)) for brand in goal_brands)
+            view_eom_goal = _clean_goal_amount(eom_goal) or total_brand_eom_goal
+            view_weekly_goals = {}
+            for week in goal_weeks:
+                total_week_goal = _clean_goal_amount(weekly_goals.get(week["id"], 0))
+                brand_week_total = _brand_week_goal_total(week["id"], goal_brands)
+                effective_week_goal = total_week_goal or brand_week_total
+                if effective_week_goal > 0:
+                    view_weekly_goals[week["id"]] = effective_week_goal
+        else:
+            view_eom_goal = _clean_goal_amount(brand_eom_goals.get(goal_brand_view, 0))
+            view_weekly_goals = {}
+            for week in goal_weeks:
+                brand_week_goal = _brand_week_goal_total(week["id"], selected_goal_brands)
+                if brand_week_goal > 0:
+                    view_weekly_goals[week["id"]] = brand_week_goal
+
         goal_daily = _build_goal_daily_frame(
             goal_order_df,
             goal_month_start,
             goal_month_end,
             goal_weeks,
-            weekly_goals,
-            eom_goal,
+            view_weekly_goals,
+            view_eom_goal,
+            brands=goal_daily_brand_filter,
         )
         today = datetime.now().date()
         if today < goal_month_start:
@@ -7164,16 +7278,16 @@ with tab_goals:
         elapsed_days = max(1, min(total_days, (progress_day - goal_month_start).days + 1))
         remaining_days = max(0, (goal_month_end - progress_day).days)
         projected_eom = month_sales if progress_day == goal_month_end else sales_to_date / elapsed_days * total_days
-        active_goal = _clean_goal_amount(eom_goal) or sum(weekly_goals.values())
-        goal_gap = max(0.0, _clean_goal_amount(eom_goal) - sales_to_date) if eom_goal else 0.0
+        active_goal = _clean_goal_amount(view_eom_goal) or sum(view_weekly_goals.values())
+        goal_gap = max(0.0, _clean_goal_amount(view_eom_goal) - sales_to_date) if view_eom_goal else 0.0
         required_per_day = goal_gap / remaining_days if remaining_days else 0.0
 
         gk1, gk2, gk3, gk4 = st.columns(4)
         gk1.metric("Sales to Date", fmt_usd(sales_to_date))
-        gk2.metric("EOM Goal", fmt_usd(_clean_goal_amount(eom_goal)))
+        gk2.metric("EOM Goal", fmt_usd(_clean_goal_amount(view_eom_goal)))
         gk3.metric("Progress", pct(sales_to_date, active_goal) if active_goal else "0.0%")
-        gk4.metric("Projected EOM", fmt_usd(projected_eom), fmt_usd(projected_eom - _clean_goal_amount(eom_goal)) if eom_goal else None)
-        if eom_goal and remaining_days:
+        gk4.metric("Projected EOM", fmt_usd(projected_eom), fmt_usd(projected_eom - _clean_goal_amount(view_eom_goal)) if view_eom_goal else None)
+        if view_eom_goal and remaining_days:
             st.caption(f"{fmt_usd(goal_gap)} remaining · {fmt_usd(required_per_day)} per day needed through {_short_date_label(goal_month_end)}")
 
         goal_daily_plot = goal_daily.copy()
@@ -7210,7 +7324,7 @@ with tab_goals:
             marker=dict(size=5),
             hovertemplate="%{x|%m/%d/%Y}<br>Actual: $%{y:,.0f}<extra></extra>",
         ))
-        if eom_goal:
+        if view_eom_goal:
             fig_goals.add_trace(go.Scatter(
                 x=goal_daily_plot["Date"],
                 y=goal_daily_plot["EOM Goal Pace"],
@@ -7219,7 +7333,7 @@ with tab_goals:
                 line=dict(color="#F3C969", width=2, dash="dash"),
                 hovertemplate="%{x|%m/%d/%Y}<br>EOM pace: $%{y:,.0f}<extra></extra>",
             ))
-        if sum(weekly_goals.values()) > 0:
+        if sum(view_weekly_goals.values()) > 0:
             fig_goals.add_trace(go.Scatter(
                 x=goal_daily_plot["Date"],
                 y=goal_daily_plot["Weekly Goal Pace"],
@@ -7256,7 +7370,7 @@ with tab_goals:
                 goal_daily["Date"].dt.date.between(week["start"], week["end"]),
                 "Daily Sales",
             ].sum())
-            week_goal = _clean_goal_amount(weekly_goals.get(week["id"], 0))
+            week_goal = _clean_goal_amount(view_weekly_goals.get(week["id"], 0))
             weekly_progress_rows.append({
                 "Week": week["label"],
                 "Notes": weekly_notes.get(week["id"], ""),
