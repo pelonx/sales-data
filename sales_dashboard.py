@@ -7483,6 +7483,12 @@ with tab_mom:
             _latest_order_month_start = _ord_max.replace(day=1)
             _cm_from_default = max(_ord_min, _latest_order_month_start)
             _cm_to_default = _ord_max
+        _mom_range_signature = f"{_ord_min.isoformat()}:{_ord_max.isoformat()}"
+        _mom_seen_signature = st.session_state.get("_mom_order_range_signature")
+        _mom_manual_range = bool(st.session_state.get("_mom_date_range_manual", False))
+        if _mom_seen_signature != _mom_range_signature and not _mom_manual_range:
+            st.session_state["mom_from"] = _cm_from_default
+            st.session_state["mom_to"] = _cm_to_default
         for _mom_key, _mom_default in (("mom_from", _cm_from_default), ("mom_to", _cm_to_default)):
             _mom_existing = st.session_state.get(_mom_key)
             try:
@@ -7494,13 +7500,26 @@ with tab_mom:
                 _mom_outside_range = True
             if _mom_outside_range:
                 st.session_state[_mom_key] = _mom_default
+                st.session_state["_mom_date_range_manual"] = False
+        st.session_state["_mom_order_range_signature"] = _mom_range_signature
 
-        mc1, mc2, mc3, _ = st.columns([2, 1, 1, 2])
+        def _mark_mom_date_range_manual():
+            st.session_state["_mom_date_range_manual"] = True
+
+        mc1, mc2, mc3, mc4 = st.columns([2, 1, 1, 2])
         prev_month  = mc1.selectbox("Last month", months, index=_prev_idx, key="mom_base")
         _cm_from    = mc2.date_input("Current from", value=_cm_from_default,
-                                      min_value=_ord_min, max_value=_ord_max, key="mom_from")
+                                      min_value=_ord_min, max_value=_ord_max, key="mom_from",
+                                      on_change=_mark_mom_date_range_manual)
         _cm_to      = mc3.date_input("Current to",   value=_cm_to_default,
-                                      min_value=_ord_min, max_value=_ord_max, key="mom_to")
+                                      min_value=_ord_min, max_value=_ord_max, key="mom_to",
+                                      on_change=_mark_mom_date_range_manual)
+        mc4.markdown("<div style='height:1.85rem'></div>", unsafe_allow_html=True)
+        if mc4.button("Use latest order range", key="mom_use_latest_range", width="stretch"):
+            st.session_state["_mom_date_range_manual"] = False
+            st.session_state["mom_from"] = _cm_from_default
+            st.session_state["mom_to"] = _cm_to_default
+            st.rerun()
 
         _curr_label = f"{_cm_from.strftime('%b %-d')} – {_cm_to.strftime('%b %-d, %Y')}"
         _curr_paid = _ord_df_mom[
@@ -7508,16 +7527,32 @@ with tab_mom:
             (_ord_df_mom["Submitted Date"].dt.date <= _cm_to)   &
             (_ord_df_mom["Brand"] != "Bulk")                    &
             (_ord_df_mom["Line Total"] > 0)
-        ]
-        # Group by License # only — avoid multi-row joins from Client name variations
-        _curr_rev = _curr_paid.groupby("License #")["Line Total"].sum().reset_index()
-        _curr_rev.columns = ["License", "Current Month"]
-        # Store name: take the first Client value per license from the order sheet
-        _curr_names = (
-            _curr_paid.drop_duplicates("License #")[["License #", "Client"]]
-            .rename(columns={"License #": "License", "Client": "_ord_name"})
+        ].copy()
+        _curr_paid["_License Key"] = _curr_paid["License #"].apply(license_match_key)
+        _curr_paid["_MoM Key"] = _curr_paid["_License Key"]
+        _blank_curr_license = _curr_paid["_MoM Key"].eq("")
+        _curr_paid.loc[_blank_curr_license, "_MoM Key"] = (
+            "STORE:" + _curr_paid.loc[_blank_curr_license, "Client"].apply(store_match_key)
         )
-        _curr_rev = _curr_rev.merge(_curr_names, on="License", how="left")
+
+        def _first_mom_text(values):
+            for value in values:
+                text = clean_reference(value)
+                if text:
+                    return text
+            return ""
+
+        _curr_rev = (
+            _curr_paid.groupby("_MoM Key", dropna=False)
+            .agg(
+                **{
+                    "Current Month": ("Line Total", "sum"),
+                    "_ord_license": ("License #", _first_mom_text),
+                    "_ord_name": ("Client", _first_mom_text),
+                }
+            )
+            .reset_index()
+        )
         _mom_brand_colors = {
             "K. Savage": "#4CE89C",
             "Mayfield": "#E8844C",
@@ -7532,20 +7567,19 @@ with tab_mom:
         )
         _mom_brand_cols += _mom_extra_brands
         if _curr_paid.empty:
-            _curr_brand_rev = pd.DataFrame(columns=["License"] + _mom_brand_cols)
+            _curr_brand_rev = pd.DataFrame(columns=["_MoM Key"] + _mom_brand_cols)
         else:
             _curr_brand_rev = (
                 _curr_paid.pivot_table(
-                    index="License #",
+                    index="_MoM Key",
                     columns="Brand",
                     values="Line Total",
                     aggfunc="sum",
                     fill_value=0,
                 )
                 .reset_index()
-                .rename(columns={"License #": "License"})
             )
-        _curr_brand_rev["License"] = _curr_brand_rev.get("License", pd.Series(dtype=str)).astype(str)
+        _curr_brand_rev["_MoM Key"] = _curr_brand_rev.get("_MoM Key", pd.Series(dtype=str)).astype(str)
         for _brand in _mom_brand_cols:
             if _brand not in _curr_brand_rev.columns:
                 _curr_brand_rev[_brand] = 0
@@ -7555,12 +7589,14 @@ with tab_mom:
         _rev.index.name = "License"
         _rev = _rev.reset_index()
         _rev["License"] = _rev["License"].astype(str)
+        _rev["_MoM Key"] = _rev["License"].apply(license_match_key)
 
         # Outer join so neither source drops rows
-        mom = _curr_rev.merge(_rev, on="License", how="outer")
+        mom = _curr_rev.merge(_rev, on="_MoM Key", how="outer")
+        mom["License"] = mom["License"].combine_first(mom["_ord_license"])
         # Prefer revenue-dashboard store name; fall back to order-sheet name
         mom["Store Name"] = mom["Store Name"].combine_first(mom["_ord_name"])
-        mom = mom.drop(columns=["_ord_name"])
+        mom = mom.drop(columns=["_ord_license", "_ord_name"])
         mom = mom.rename(columns={prev_month: "Last Month"})
         mom["Current Month"] = mom["Current Month"].fillna(0)
         mom["Last Month"]    = mom["Last Month"].fillna(0)
@@ -7595,6 +7631,25 @@ with tab_mom:
             f" – "
             f"{_ord_df_mom['Submitted Date'].max().strftime('%m/%d/%Y') if not _ord_df_mom['Submitted Date'].isna().all() else 'N/A'}"
         )
+        _rev_keys = set(_rev["_MoM Key"].dropna().astype(str))
+        _order_only_current = _curr_rev[
+            _curr_rev["_MoM Key"].astype(str).str.strip().ne("")
+            & ~_curr_rev["_MoM Key"].isin(_rev_keys)
+            & (pd.to_numeric(_curr_rev["Current Month"], errors="coerce").fillna(0) > 0)
+        ]
+        _blank_license_sales = float(_curr_paid.loc[_blank_curr_license, "Line Total"].sum())
+        _mom_match_notes = []
+        if _order_only_current.shape[0]:
+            _mom_match_notes.append(
+                f"{_order_only_current.shape[0]} current-selling store"
+                f"{'s' if _order_only_current.shape[0] != 1 else ''} not found in the monthly sheet"
+            )
+        if _blank_license_sales > 0:
+            _mom_match_notes.append(
+                f"{fmt_usd(_blank_license_sales)} current sales had blank licenses and were grouped by store name"
+            )
+        if _mom_match_notes:
+            st.caption("MoM matching note: " + " · ".join(_mom_match_notes))
 
         st.divider()
 
@@ -7624,8 +7679,10 @@ with tab_mom:
                     return ["background-color: rgba(255,150,150,0.25)"] * len(row)
             return [""] * len(row)
 
+        _mom_display_columns = ["Store Name", "License", "Last Month", "Current Month", "$ Change", "% Change"]
         styled_mom = (
-            disp_mom.rename(columns={"Last Month": prev_month, "Current Month": _curr_label})
+            disp_mom[[col for col in _mom_display_columns if col in disp_mom.columns]]
+            .rename(columns={"Last Month": prev_month, "Current Month": _curr_label})
             .style
             .apply(_mom_row_style, axis=1)
             .format({
@@ -7667,8 +7724,8 @@ with tab_mom:
                 axis=1,
             )
             movers_chart = movers_chart.merge(
-                _curr_brand_rev[["License"] + _mom_brand_cols],
-                on="License",
+                _curr_brand_rev[["_MoM Key"] + _mom_brand_cols],
+                on="_MoM Key",
                 how="left",
             )
             for _brand in _mom_brand_cols:
