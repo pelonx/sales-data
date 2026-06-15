@@ -473,67 +473,75 @@ def latest_sales_ppg_summary(
 
 def add_inventory_revenue_estimates(inventory_df: pd.DataFrame, sales_df: pd.DataFrame) -> pd.DataFrame:
     inventory = inventory_df.copy()
-    facility_exact = latest_sales_ppg_summary(
-        sales_df,
-        ["Facility", "Product", "Strain", "Brand"],
-        "Facility Exact $/gram",
-        "Facility Exact Price Date",
-    )
-    facility_product_strain = latest_sales_ppg_summary(
-        sales_df,
-        ["Facility", "Product", "Strain"],
-        "Facility Product + Strain $/gram",
-        "Facility Product + Strain Price Date",
-    )
-    facility_product_brand = latest_sales_ppg_summary(
-        sales_df,
-        ["Facility", "Product", "Brand"],
-        "Facility Product + Brand $/gram",
-        "Facility Product + Brand Price Date",
-    )
-    facility_product = latest_sales_ppg_summary(
-        sales_df, ["Facility", "Product"], "Facility Product $/gram", "Facility Product Price Date"
-    )
-    exact = latest_sales_ppg_summary(
-        sales_df, ["Product", "Strain", "Brand"], "Exact $/gram", "Exact Price Date"
-    )
-    product_strain = latest_sales_ppg_summary(
-        sales_df, ["Product", "Strain"], "Product + Strain $/gram", "Product + Strain Price Date"
-    )
-    product_brand = latest_sales_ppg_summary(
-        sales_df, ["Product", "Brand"], "Product + Brand $/gram", "Product + Brand Price Date"
-    )
-    product = latest_sales_ppg_summary(
-        sales_df, ["Product"], "Product $/gram", "Product Price Date"
-    )
-
-    inventory = inventory.merge(facility_exact, on=["Facility", "Product", "Strain", "Brand"], how="left")
-    inventory = inventory.merge(facility_product_strain, on=["Facility", "Product", "Strain"], how="left")
-    inventory = inventory.merge(facility_product_brand, on=["Facility", "Product", "Brand"], how="left")
-    inventory = inventory.merge(facility_product, on=["Facility", "Product"], how="left")
-    inventory = inventory.merge(exact, on=["Product", "Strain", "Brand"], how="left")
-    inventory = inventory.merge(product_strain, on=["Product", "Strain"], how="left")
-    inventory = inventory.merge(product_brand, on=["Product", "Brand"], how="left")
-    inventory = inventory.merge(product, on=["Product"], how="left")
-
-    price_sources = [
-        ("Facility Exact $/gram", "Facility Exact Price Date", "Facility + Product + Strain + Brand"),
-        (
+    has_facility_pricing = "Facility" in inventory.columns and "Facility" in sales_df.columns
+    if has_facility_pricing:
+        facility_exact = latest_sales_ppg_summary(
+            sales_df,
+            ["Facility", "Product", "Strain", "Brand"],
+            "Facility Exact $/gram",
+            "Facility Exact Price Date",
+        )
+        facility_product_strain = latest_sales_ppg_summary(
+            sales_df,
+            ["Facility", "Product", "Strain"],
             "Facility Product + Strain $/gram",
             "Facility Product + Strain Price Date",
-            "Facility + Product + Strain",
-        ),
-        (
+        )
+        facility_product_brand = latest_sales_ppg_summary(
+            sales_df,
+            ["Facility", "Product", "Brand"],
             "Facility Product + Brand $/gram",
             "Facility Product + Brand Price Date",
-            "Facility + Product + Brand",
-        ),
-        ("Facility Product $/gram", "Facility Product Price Date", "Facility + Product"),
-        ("Exact $/gram", "Exact Price Date", "Product + Strain + Brand"),
-        ("Product + Strain $/gram", "Product + Strain Price Date", "Product + Strain"),
-        ("Product + Brand $/gram", "Product + Brand Price Date", "Product + Brand"),
-        ("Product $/gram", "Product Price Date", "Product"),
-    ]
+        )
+        facility_product = latest_sales_ppg_summary(
+            sales_df,
+            ["Facility", "Product"],
+            "Facility Product $/gram",
+            "Facility Product Price Date",
+        )
+
+        inventory = inventory.merge(facility_exact, on=["Facility", "Product", "Strain", "Brand"], how="left")
+        inventory = inventory.merge(facility_product_strain, on=["Facility", "Product", "Strain"], how="left")
+        inventory = inventory.merge(facility_product_brand, on=["Facility", "Product", "Brand"], how="left")
+        inventory = inventory.merge(facility_product, on=["Facility", "Product"], how="left")
+        price_sources = [
+            ("Facility Exact $/gram", "Facility Exact Price Date", "Facility + Product + Strain + Brand"),
+            (
+                "Facility Product + Strain $/gram",
+                "Facility Product + Strain Price Date",
+                "Facility + Product + Strain",
+            ),
+            (
+                "Facility Product + Brand $/gram",
+                "Facility Product + Brand Price Date",
+                "Facility + Product + Brand",
+            ),
+            ("Facility Product $/gram", "Facility Product Price Date", "Facility + Product"),
+        ]
+    else:
+        exact = latest_sales_ppg_summary(
+            sales_df, ["Product", "Strain", "Brand"], "Exact $/gram", "Exact Price Date"
+        )
+        product_strain = latest_sales_ppg_summary(
+            sales_df, ["Product", "Strain"], "Product + Strain $/gram", "Product + Strain Price Date"
+        )
+        product_brand = latest_sales_ppg_summary(
+            sales_df, ["Product", "Brand"], "Product + Brand $/gram", "Product + Brand Price Date"
+        )
+        product = latest_sales_ppg_summary(
+            sales_df, ["Product"], "Product $/gram", "Product Price Date"
+        )
+
+        inventory = inventory.merge(exact, on=["Product", "Strain", "Brand"], how="left")
+        inventory = inventory.merge(product_strain, on=["Product", "Strain"], how="left")
+        inventory = inventory.merge(product_brand, on=["Product", "Brand"], how="left")
+        inventory = inventory.merge(product, on=["Product"], how="left")
+        price_sources = [
+            ("Exact $/gram", "Exact Price Date", "Product + Strain + Brand"),
+            ("Product + Strain $/gram", "Product + Strain Price Date", "Product + Strain"),
+            ("Product + Brand $/gram", "Product + Brand Price Date", "Product + Brand"),
+            ("Product $/gram", "Product Price Date", "Product"),
+        ]
     inventory["Recent $/gram"] = pd.NA
     inventory["Price Date"] = pd.NaT
     inventory["Price Source"] = "No sales match"
@@ -996,7 +1004,8 @@ def render_inventory_tab(
     )
     inventory_view = add_inventory_revenue_estimates(inventory_view, sales_df)
 
-    selected_products = product_type_multiselect(inventory_view, "inventory_product_types")
+    inventory_product_key = f"inventory_product_types_{slugify_filename(selected_facility)}"
+    selected_products = product_type_multiselect(inventory_view, inventory_product_key)
     if not selected_products:
         st.caption("No product types selected.")
         return
