@@ -73,6 +73,11 @@ FACILITY_COLORS = {
     "Block 13": "#4CE89C",
     "B-9":      "#9B6BE8",
 }
+FACILITY_SORT_ORDER = {
+    "B-9": 0,
+    "Block 13": 1,
+    "Unassigned": 99,
+}
 PRODUCT_COLORS = {
     "A Grade": "#4CE89C",
     "B Grade": "#4C9BE8",
@@ -370,6 +375,30 @@ def normalize_inventory_facility(value) -> str:
         return "B-9"
     return text or "Unassigned"
 
+def find_inventory_facility_column(inventory: pd.DataFrame) -> str:
+    named_candidates = [
+        "Facility",
+        "Source",
+        "Location",
+    ]
+    for col in named_candidates:
+        if col in inventory.columns:
+            return col
+
+    best_col = ""
+    best_score = 0
+    unnamed_cols = [
+        col for col in inventory.columns
+        if str(col).strip().casefold().startswith("unnamed")
+    ]
+    for col in unnamed_cols:
+        normalized = inventory[col].apply(normalize_inventory_facility)
+        score = normalized.isin({"B-9", "Block 13"}).sum()
+        if score > best_score:
+            best_col = col
+            best_score = score
+    return best_col
+
 def parse_inventory_tab(raw: pd.DataFrame) -> pd.DataFrame:
     inventory = raw.copy()
     inventory.columns = [str(c).strip() for c in inventory.columns]
@@ -387,19 +416,7 @@ def parse_inventory_tab(raw: pd.DataFrame) -> pd.DataFrame:
         if col in inventory.columns:
             inventory[col] = _clean_numeric(inventory[col])
 
-    facility_col = next(
-        (
-            col for col in [
-                "Facility",
-                "Source",
-                "Location",
-                "Unnamed: 10",
-                "Unnamed: 9",
-            ]
-            if col in inventory.columns
-        ),
-        "",
-    )
+    facility_col = find_inventory_facility_column(inventory)
     if facility_col:
         inventory["Facility"] = inventory[facility_col].apply(normalize_inventory_facility)
     else:
@@ -871,7 +888,14 @@ def render_inventory_tab(
         "Stock Coverage Ratio",
     ]
     detail_cols = [col for col in detail_cols if col in inventory_view.columns]
-    inventory_detail = inventory_view.sort_values("Estimated Revenue", ascending=False)[detail_cols]
+    inventory_detail = inventory_view.copy()
+    inventory_detail["_Facility Sort"] = (
+        inventory_detail["Facility"].map(FACILITY_SORT_ORDER).fillna(98)
+    )
+    inventory_detail = inventory_detail.sort_values(
+        ["_Facility Sort", "Product", "Estimated Revenue"],
+        ascending=[True, True, False],
+    )[detail_cols]
     st.dataframe(
         inventory_detail,
         width="stretch",
