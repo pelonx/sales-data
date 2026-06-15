@@ -78,6 +78,10 @@ FACILITY_SORT_ORDER = {
     "Block 13": 1,
     "Unassigned": 99,
 }
+SALE_TYPE_COLORS = {
+    "Brand Sales": "#4CE89C",
+    "Wholesale": "#4C9BE8",
+}
 PRODUCT_COLORS = {
     "A Grade": "#4CE89C",
     "B Grade": "#4C9BE8",
@@ -469,6 +473,27 @@ def latest_sales_ppg_summary(
 
 def add_inventory_revenue_estimates(inventory_df: pd.DataFrame, sales_df: pd.DataFrame) -> pd.DataFrame:
     inventory = inventory_df.copy()
+    facility_exact = latest_sales_ppg_summary(
+        sales_df,
+        ["Facility", "Product", "Strain", "Brand"],
+        "Facility Exact $/gram",
+        "Facility Exact Price Date",
+    )
+    facility_product_strain = latest_sales_ppg_summary(
+        sales_df,
+        ["Facility", "Product", "Strain"],
+        "Facility Product + Strain $/gram",
+        "Facility Product + Strain Price Date",
+    )
+    facility_product_brand = latest_sales_ppg_summary(
+        sales_df,
+        ["Facility", "Product", "Brand"],
+        "Facility Product + Brand $/gram",
+        "Facility Product + Brand Price Date",
+    )
+    facility_product = latest_sales_ppg_summary(
+        sales_df, ["Facility", "Product"], "Facility Product $/gram", "Facility Product Price Date"
+    )
     exact = latest_sales_ppg_summary(
         sales_df, ["Product", "Strain", "Brand"], "Exact $/gram", "Exact Price Date"
     )
@@ -482,12 +507,28 @@ def add_inventory_revenue_estimates(inventory_df: pd.DataFrame, sales_df: pd.Dat
         sales_df, ["Product"], "Product $/gram", "Product Price Date"
     )
 
+    inventory = inventory.merge(facility_exact, on=["Facility", "Product", "Strain", "Brand"], how="left")
+    inventory = inventory.merge(facility_product_strain, on=["Facility", "Product", "Strain"], how="left")
+    inventory = inventory.merge(facility_product_brand, on=["Facility", "Product", "Brand"], how="left")
+    inventory = inventory.merge(facility_product, on=["Facility", "Product"], how="left")
     inventory = inventory.merge(exact, on=["Product", "Strain", "Brand"], how="left")
     inventory = inventory.merge(product_strain, on=["Product", "Strain"], how="left")
     inventory = inventory.merge(product_brand, on=["Product", "Brand"], how="left")
     inventory = inventory.merge(product, on=["Product"], how="left")
 
     price_sources = [
+        ("Facility Exact $/gram", "Facility Exact Price Date", "Facility + Product + Strain + Brand"),
+        (
+            "Facility Product + Strain $/gram",
+            "Facility Product + Strain Price Date",
+            "Facility + Product + Strain",
+        ),
+        (
+            "Facility Product + Brand $/gram",
+            "Facility Product + Brand Price Date",
+            "Facility + Product + Brand",
+        ),
+        ("Facility Product $/gram", "Facility Product Price Date", "Facility + Product"),
         ("Exact $/gram", "Exact Price Date", "Product + Strain + Brand"),
         ("Product + Strain $/gram", "Product + Strain Price Date", "Product + Strain"),
         ("Product + Brand $/gram", "Product + Brand Price Date", "Product + Brand"),
@@ -795,6 +836,138 @@ def render_costs_tab(
             "costs_detailed_income_statement",
             table_df=income_statement_df,
         )
+
+def render_analytics_tab(combined_df: pd.DataFrame):
+    if combined_df.empty:
+        st.info("No Brand Sales or Wholesale records found.")
+        return
+
+    analytics_df = combined_df.copy()
+    analytics_df["Transfer Date"] = pd.to_datetime(
+        analytics_df["Transfer Date"],
+        errors="coerce",
+    )
+    analytics_df["Transfer Day"] = analytics_df["Transfer Date"].dt.date
+    analytics_df = analytics_df.dropna(subset=["Transfer Day"]).copy()
+    if analytics_df.empty:
+        st.caption("Analytics unavailable -- Transfer Date not parsed.")
+        return
+
+    brands = sorted(
+        analytics_df["Brand"].dropna().replace("nan", pd.NA).dropna().unique().tolist()
+    )
+    products = sorted(
+        analytics_df["Product"].dropna().replace("nan", pd.NA).dropna().unique().tolist()
+    )
+    min_date, max_date, from_default, to_default = current_ytd_date_bounds(
+        analytics_df["Transfer Day"]
+    )
+
+    af1, af2, af3, af4 = st.columns([2, 2, 1, 1])
+    selected_brands = af1.multiselect(
+        "Brand",
+        options=brands,
+        default=brands,
+        key="analytics_brands",
+    )
+    selected_products = af2.multiselect(
+        "Product Types",
+        options=products,
+        default=products,
+        key="analytics_product_types",
+    )
+    from_date = af3.date_input(
+        "From",
+        value=from_default,
+        min_value=min_date,
+        max_value=max_date,
+        key="analytics_from",
+    )
+    to_date = af4.date_input(
+        "To",
+        value=to_default,
+        min_value=min_date,
+        max_value=max_date,
+        key="analytics_to",
+    )
+    start_date, end_date = sorted([from_date, to_date])
+    show_active_date_range(start_date, end_date)
+
+    if not selected_brands or not selected_products:
+        st.caption("Select at least one brand and product type.")
+        return
+
+    filtered = analytics_df[
+        analytics_df["Brand"].isin(selected_brands)
+        & analytics_df["Product"].isin(selected_products)
+        & analytics_df["Transfer Day"].between(start_date, end_date)
+    ].copy()
+    if filtered.empty:
+        st.caption("No analytics data for the selected filters.")
+        return
+
+    filtered["Month"] = filtered["Transfer Date"].dt.to_period("M").astype(str)
+    monthly = (
+        filtered[filtered["Month"].str.match(r"\d{4}-\d{2}")]
+        .groupby(["Month", "Sale Type"], as_index=False)
+        .agg(Revenue=("Total", "sum"))
+        .sort_values(["Month", "Sale Type"])
+    )
+    if monthly.empty:
+        st.caption("Monthly analytics unavailable for the selected filters.")
+        return
+
+    monthly["Month Total"] = monthly.groupby("Month")["Revenue"].transform("sum")
+    monthly["% of Month"] = monthly.apply(
+        lambda row: pct_value(row["Revenue"], row["Month Total"]),
+        axis=1,
+    )
+    monthly["Share Label"] = monthly["% of Month"].map(lambda value: f"{value:.0f}%")
+
+    st.subheader("Monthly Sales Mix")
+    fig_mix = px.bar(
+        monthly,
+        x="Month",
+        y="Revenue",
+        color="Sale Type",
+        barmode="stack",
+        text="Share Label",
+        color_discrete_map=SALE_TYPE_COLORS,
+        custom_data=["Revenue", "% of Month", "Month Total"],
+    )
+    fig_mix.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#e3e3d8", height=390,
+        margin=dict(l=0, r=20, t=10, b=10),
+        xaxis_title="", yaxis_title="Revenue ($)",
+        legend_title="Sale Type",
+    )
+    fig_mix.update_yaxes(tickprefix="$")
+    fig_mix.update_traces(
+        textposition="inside",
+        insidetextanchor="middle",
+        cliponaxis=False,
+        hovertemplate=(
+            "%{x}<br>%{legendgroup}: %{customdata[0]:$,.0f}"
+            "<br>Share: %{customdata[1]:.1f}%"
+            "<br>Month total: %{customdata[2]:$,.0f}<extra></extra>"
+        ),
+    )
+    st.plotly_chart(fig_mix, width="stretch")
+
+    monthly_export = monthly[[
+        "Month",
+        "Sale Type",
+        "Revenue",
+        "Month Total",
+        "% of Month",
+    ]].copy()
+    section_pdf_export(
+        "Analytics Monthly Sales Mix",
+        "analytics_monthly_sales_mix",
+        table_df=monthly_export,
+        fig=fig_mix,
+    )
 
 def render_inventory_tab(
     inventory_df: pd.DataFrame,
@@ -1610,10 +1783,11 @@ combined_df = pd.concat(
 )
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_brand, tab_wholesale, tab_both, tab_inventory, tab_costs = st.tabs([
+tab_brand, tab_wholesale, tab_both, tab_analytics, tab_inventory, tab_costs = st.tabs([
     "🏷️ Brand Sales",
     "🏪 Wholesale",
     "📊 Both",
+    "📈 Analytics",
     "📦 Inventory",
     "💸 Costs",
 ])
@@ -2196,6 +2370,12 @@ with tab_both:
             )
         else:
             st.caption("Monthly trend unavailable — Transfer Date not parsed.")
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  TAB — Analytics                                                ║
+# ╚══════════════════════════════════════════════════════════════════╝
+with tab_analytics:
+    render_analytics_tab(combined_df)
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  TAB — Inventory                                                ║
