@@ -78,6 +78,8 @@ To install:
 7. Run `syncGrowFlowReportToSheet` once to write the sheet.
 8. Run `createGrowFlowHourlyTrigger` to refresh hourly.
 
+For the Production dashboard inventory tab, run `setupGrowFlowInventoryExampleConfig`. It uses the inventory fields from the GrowFlow query plus `skip` and `take` so the sync can page through more than GrowFlow's max page size. If the inventory is for a specific dashboard facility, set `GROWFLOW_FACILITY_LABEL` to `B-9` or `Block 13`; the sync will write that as a `Facility` column so the dashboard can match recent sales prices by facility. Then use the `GrowFlow Inventory` worksheet gid as the Production dashboard `Inventory GID`.
+
 The main configurable properties are:
 
 ```text
@@ -86,6 +88,7 @@ GROWFLOW_GRAPHQL_VARIABLES_JSON
 GROWFLOW_TARGET_SHEET_NAME
 GROWFLOW_PAGINATION_FIELD
 GROWFLOW_ARRAY_EXPAND_PATH
+GROWFLOW_FACILITY_LABEL
 ```
 
 `GROWFLOW_PAGINATION_FIELD` should match the GraphQL field with `totalCount` and `items`, such as `orders` or `inventories`. `GROWFLOW_ARRAY_EXPAND_PATH` is optional; for the orders example it is set to `lineItems` so each order line is written with the parent order fields. Access tokens are cached automatically in Script Properties and refreshed before expiry. The sync uses GrowFlow's max page size of 100 and respects `Retry-After` on HTTP 429 rate-limit responses.

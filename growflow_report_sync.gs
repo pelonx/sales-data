@@ -20,6 +20,7 @@ const GROWFLOW_PROP_GRAPHQL_VARIABLES = 'GROWFLOW_GRAPHQL_VARIABLES_JSON';
 const GROWFLOW_PROP_PAGINATION_FIELD = 'GROWFLOW_PAGINATION_FIELD';
 const GROWFLOW_PROP_ARRAY_EXPAND_PATH = 'GROWFLOW_ARRAY_EXPAND_PATH';
 const GROWFLOW_PROP_TARGET_SHEET_NAME = 'GROWFLOW_TARGET_SHEET_NAME';
+const GROWFLOW_PROP_FACILITY_LABEL = 'GROWFLOW_FACILITY_LABEL';
 
 function checkGrowFlowReportSyncSetup() {
   const props = PropertiesService.getScriptProperties();
@@ -34,6 +35,7 @@ function checkGrowFlowReportSyncSetup() {
   Logger.log(`${GROWFLOW_PROP_GRAPHQL_QUERY} configured: ${Boolean(props.getProperty(GROWFLOW_PROP_GRAPHQL_QUERY))}`);
   Logger.log(`${GROWFLOW_PROP_PAGINATION_FIELD}: ${props.getProperty(GROWFLOW_PROP_PAGINATION_FIELD) || '(auto)'}`);
   Logger.log(`${GROWFLOW_PROP_ARRAY_EXPAND_PATH}: ${props.getProperty(GROWFLOW_PROP_ARRAY_EXPAND_PATH) || '(none)'}`);
+  Logger.log(`${GROWFLOW_PROP_FACILITY_LABEL}: ${props.getProperty(GROWFLOW_PROP_FACILITY_LABEL) || '(none)'}`);
 
   try {
     const variables = getGrowFlowGraphQLVariables_();
@@ -502,6 +504,10 @@ function growFlowRowsToSheetValues_(rows) {
 
   const expandedRows = expandGrowFlowRows_(rows, getGrowFlowArrayExpandPath_());
   const flatRows = expandedRows.map(row => growFlowFlattenRow_(row, ''));
+  const facilityLabel = getGrowFlowFacilityLabel_();
+  if (facilityLabel) {
+    flatRows.forEach(row => growFlowSetDefaultColumn_(row, 'Facility', facilityLabel));
+  }
   const headers = [];
   flatRows.forEach(row => {
     Object.keys(row).forEach(key => {
@@ -638,6 +644,26 @@ function getGrowFlowTargetSheetName_() {
     PropertiesService.getScriptProperties().getProperty(GROWFLOW_PROP_TARGET_SHEET_NAME) ||
     GROWFLOW_DEFAULT_DATA_SHEET_NAME
   ).trim();
+}
+
+function getGrowFlowFacilityLabel_() {
+  return String(
+    PropertiesService.getScriptProperties().getProperty(GROWFLOW_PROP_FACILITY_LABEL) ||
+    ''
+  ).trim();
+}
+
+function growFlowSetDefaultColumn_(row, columnName, value) {
+  const existingKey = Object.keys(row).find(key => (
+    String(key).trim().toLowerCase() === String(columnName).trim().toLowerCase()
+  ));
+  if (!existingKey) {
+    row[columnName] = value;
+    return;
+  }
+  if (!String(row[existingKey] || '').trim()) {
+    row[existingKey] = value;
+  }
 }
 
 function getOrCreateGrowFlowSheet_(name) {

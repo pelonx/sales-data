@@ -144,6 +144,22 @@ PRODUCT_ALIASES = {
     "Trim Material":    "Trim",
 }
 
+INVENTORY_COLUMN_ALIASES = [
+    ("product.name", "Product"),
+    ("product.strain.name", "Strain"),
+    ("remainingQuantity", "Quantity"),
+    ("product.traceabilityTypeName", "Type"),
+    ("room.name", "Room"),
+    ("room.id", "Room ID"),
+    ("status", "Status"),
+    ("unit", "Unit"),
+    ("complianceId", "Compliance ID"),
+    ("birthDate", "Birth Date"),
+    ("createTimestamp", "Created At"),
+    ("product.size", "Product Size"),
+    ("product.unit", "Product Unit"),
+]
+
 def fmt_usd(v):
     if v is None or (isinstance(v, float) and pd.isna(v)): return "$0"
     return f"${v:,.0f}"
@@ -379,6 +395,30 @@ def normalize_inventory_facility(value) -> str:
         return "B-9"
     return text or "Unassigned"
 
+def normalize_inventory_column_key(value) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+def inventory_column_has_values(series: pd.Series) -> bool:
+    cleaned = series.dropna().astype(str).str.strip()
+    cleaned = cleaned[cleaned.ne("") & cleaned.str.casefold().ne("nan")]
+    return not cleaned.empty
+
+def apply_inventory_column_aliases(inventory: pd.DataFrame) -> pd.DataFrame:
+    out = inventory.copy()
+    columns_by_key = {
+        normalize_inventory_column_key(col): col
+        for col in out.columns
+    }
+    for source, target in INVENTORY_COLUMN_ALIASES:
+        source_col = columns_by_key.get(normalize_inventory_column_key(source))
+        if not source_col:
+            continue
+        if target in out.columns and inventory_column_has_values(out[target]):
+            continue
+        out[target] = out[source_col]
+        columns_by_key[normalize_inventory_column_key(target)] = target
+    return out
+
 def find_inventory_facility_column(inventory: pd.DataFrame) -> str:
     named_candidates = [
         "Facility",
@@ -406,19 +446,35 @@ def find_inventory_facility_column(inventory: pd.DataFrame) -> str:
 def parse_inventory_tab(raw: pd.DataFrame) -> pd.DataFrame:
     inventory = raw.copy()
     inventory.columns = [str(c).strip() for c in inventory.columns]
+    inventory = apply_inventory_column_aliases(inventory)
     required = {"Product", "Strain", "Quantity"}
     missing = required - set(inventory.columns)
     if missing:
         raise ValueError(f"Inventory tab must include: {', '.join(sorted(missing))}.")
 
     inventory = inventory.dropna(how="all").copy()
-    for col in ["Type", "Category", "Product", "Strain"]:
+    for col in [
+        "Type",
+        "Category",
+        "Product",
+        "Strain",
+        "Status",
+        "Unit",
+        "Room",
+        "Room ID",
+        "Compliance ID",
+        "Product Unit",
+    ]:
         if col in inventory.columns:
             inventory[col] = inventory[col].astype(str).str.strip()
 
     for col in ["Quantity", "Age (Weeks)", "Avg Sales/Week", "# Packages", "Stock Coverage Ratio"]:
         if col in inventory.columns:
             inventory[col] = _clean_numeric(inventory[col])
+
+    for col in ["Birth Date", "Created At"]:
+        if col in inventory.columns:
+            inventory[col] = pd.to_datetime(inventory[col], errors="coerce")
 
     facility_col = find_inventory_facility_column(inventory)
     if facility_col:
@@ -1094,6 +1150,12 @@ def render_inventory_tab(
         "Strain",
         "Brand",
         "Quantity",
+        "Unit",
+        "Status",
+        "Room",
+        "Compliance ID",
+        "Birth Date",
+        "Created At",
         "Recent $/gram",
         "Estimated Revenue",
         "Price Date",
@@ -1121,6 +1183,8 @@ def render_inventory_tab(
             "Recent $/gram": st.column_config.NumberColumn("Recent $/gram", format="$%.2f"),
             "Estimated Revenue": st.column_config.NumberColumn("Estimated Revenue", format="$%.0f"),
             "Price Date": st.column_config.DateColumn("Price Date", format="YYYY-MM-DD"),
+            "Birth Date": st.column_config.DateColumn("Birth Date", format="YYYY-MM-DD"),
+            "Created At": st.column_config.DatetimeColumn("Created At", format="YYYY-MM-DD HH:mm"),
             "Age (Weeks)": st.column_config.NumberColumn("Age (Weeks)", format="%.1f"),
             "Avg Sales/Week": st.column_config.NumberColumn("Avg Sales/Week", format="%.2f"),
             "# Packages": st.column_config.NumberColumn("# Packages", format="%.0f"),
@@ -1149,6 +1213,8 @@ def render_inventory_tab(
                     "Recent $/gram": st.column_config.NumberColumn("Recent $/gram", format="$%.2f"),
                     "Estimated Revenue": st.column_config.NumberColumn("Estimated Revenue", format="$%.0f"),
                     "Price Date": st.column_config.DateColumn("Price Date", format="YYYY-MM-DD"),
+                    "Birth Date": st.column_config.DateColumn("Birth Date", format="YYYY-MM-DD"),
+                    "Created At": st.column_config.DatetimeColumn("Created At", format="YYYY-MM-DD HH:mm"),
                 },
             )
             section_pdf_export(
