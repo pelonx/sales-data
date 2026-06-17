@@ -6,6 +6,7 @@ import requests
 import sqlite3
 import os
 import re
+import json
 from datetime import datetime
 from io import BytesIO, StringIO
 from urllib.parse import urlparse
@@ -89,6 +90,34 @@ PRODUCT_COLORS = {
 }
 DEFAULT_COSTS_GID = "154377878"
 DEFAULT_INVENTORY_GID = "1120425056"
+GROWFLOW_TOKEN_URL = "https://token.growflow.com/oauth/token"
+GROWFLOW_GRAPHQL_URL = "https://partnerapi.growflow.com/"
+GROWFLOW_AUDIENCE = "https://growflow.com"
+GROWFLOW_MAX_PAGE_SIZE = 100
+GROWFLOW_INVENTORY_QUERY = """
+query Inventories($regionCode: String!, $licenseNumber: String, $skip: Int, $take: Int) {
+  inventories(regionCode: $regionCode, licenseNumber: $licenseNumber, skip: $skip, take: $take) {
+    totalCount
+    items {
+      birthDate
+      complianceId
+      remainingQuantity
+      status
+      unit
+      createTimestamp
+      product {
+        name
+        id
+        size
+        unit
+        traceabilityTypeName
+        strain { name id }
+      }
+      room { id name }
+    }
+  }
+}
+""".strip()
 COST_SUMMARY_COLUMNS = [
     "Total Income",
     "Total Cost of Goods Sold",
@@ -1533,6 +1562,19 @@ PROD_CONFIG_KEYS = {
     "gid_inventory": ("production_gid_inventory", "prod_gid_inventory", "PRODUCTION_GID_INVENTORY"),
 }
 
+def secret_or_env(*names: str, default: str = "") -> str:
+    for name in names:
+        try:
+            value = st.secrets.get(name, "")
+            if str(value).strip():
+                return str(value).strip()
+        except Exception:
+            pass
+        value = os.environ.get(name)
+        if value and value.strip():
+            return value.strip()
+    return default
+
 def _config_secret_or_env(key: str, default: str = "") -> str:
     for candidate in PROD_CONFIG_KEYS.get(key, ()):
         try:
@@ -1553,6 +1595,172 @@ def saved_or_configured_setting(settings: dict, key: str, default: str = "") -> 
     return _config_secret_or_env(key, default)
 
 # ── Data loading ──────────────────────────────────────────────────────────────
+def growflow_secret_value(name: str):
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+def growflow_source_value(source, *names: str, default: str = "") -> str:
+    for name in names:
+        try:
+            value = source.get(name, "")
+        except Exception:
+            value = ""
+        if str(value).strip():
+            return str(value).strip()
+    return default
+
+def growflow_inventory_sources_config() -> tuple[tuple[str, str, str], ...]:
+    default_region = secret_or_env("growflow_region_code", "GROWFLOW_REGION_CODE", default="wa")
+    sources = []
+    raw_sources = growflow_secret_value("growflow_inventory_sources")
+    if isinstance(raw_sources, str) and raw_sources.strip():
+        try:
+            raw_sources = json.loads(raw_sources)
+        except json.JSONDecodeError:
+            raw_sources = []
+    if isinstance(raw_sources, dict):
+        if any(isinstance(value, dict) for value in raw_sources.values()):
+            raw_sources = list(raw_sources.values())
+        else:
+            raw_sources = [raw_sources]
+    if raw_sources:
+        for source in raw_sources:
+            license_number = growflow_source_value(source, "license_number", "licenseNumber")
+            if not license_number:
+                continue
+            region_code = growflow_source_value(source, "region_code", "regionCode", default=default_region)
+            facility_label = growflow_source_value(source, "facility_label", "facilityLabel", "facility")
+            sources.append((region_code, license_number, facility_label))
+
+    if not sources:
+        license_number = secret_or_env("growflow_license_number", "GROWFLOW_LICENSE_NUMBER")
+        if license_number:
+            sources.append((
+                default_region,
+                license_number,
+                secret_or_env("growflow_facility_label", "GROWFLOW_FACILITY_LABEL"),
+            ))
+
+    deduped = []
+    seen = set()
+    for source in sources:
+        if source in seen:
+            continue
+        seen.add(source)
+        deduped.append(source)
+    return tuple(deduped)
+
+def growflow_inventory_api_config() -> tuple[str, str, tuple[tuple[str, str, str], ...]]:
+    client_id = secret_or_env("growflow_client_id", "GROWFLOW_CLIENT_ID")
+    client_secret = secret_or_env("growflow_client_secret", "GROWFLOW_CLIENT_SECRET")
+    return client_id, client_secret, growflow_inventory_sources_config()
+
+def growflow_inventory_api_ready() -> bool:
+    client_id, client_secret, sources = growflow_inventory_api_config()
+    return bool(client_id and client_secret and sources)
+
+def growflow_api_error_preview(response: requests.Response, limit: int = 500) -> str:
+    text = response.text[:limit]
+    return re.sub(r'"access_token"\s*:\s*"[^"]+"', '"access_token":"REDACTED"', text)
+
+def growflow_post_json(url: str, payload: dict, label: str, headers: dict | None = None, timeout: int = 30) -> dict:
+    response = requests.post(url, json=payload, headers=headers or {}, timeout=timeout)
+    if response.status_code < 200 or response.status_code >= 300:
+        raise ValueError(f"{label} failed with HTTP {response.status_code}: {growflow_api_error_preview(response)}")
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise ValueError(f"{label} did not return valid JSON: {response.text[:300]}") from exc
+
+def fetch_growflow_access_token(client_id: str, client_secret: str) -> str:
+    payload = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "audience": GROWFLOW_AUDIENCE,
+        "grant_type": "client_credentials",
+    }
+    data = growflow_post_json(GROWFLOW_TOKEN_URL, payload, "GrowFlow token request", timeout=20)
+    token = str(data.get("access_token") or "").strip()
+    if not token:
+        raise ValueError("GrowFlow token request succeeded, but no access_token was returned.")
+    return token
+
+def flatten_growflow_inventory_item(item: dict, facility_label: str) -> dict:
+    product = item.get("product") or {}
+    strain = product.get("strain") or {}
+    room = item.get("room") or {}
+    row = {
+        "birthDate": item.get("birthDate"),
+        "complianceId": item.get("complianceId"),
+        "remainingQuantity": item.get("remainingQuantity"),
+        "status": item.get("status"),
+        "unit": item.get("unit"),
+        "createTimestamp": item.get("createTimestamp"),
+        "product.name": product.get("name"),
+        "product.id": product.get("id"),
+        "product.size": product.get("size"),
+        "product.unit": product.get("unit"),
+        "product.traceabilityTypeName": product.get("traceabilityTypeName"),
+        "product.strain.name": strain.get("name"),
+        "product.strain.id": strain.get("id"),
+        "room.id": room.get("id"),
+        "room.name": room.get("name"),
+    }
+    if facility_label:
+        row["Facility"] = facility_label
+    return row
+
+def fetch_growflow_inventory_source(token: str, region_code: str, license_number: str, facility_label: str) -> list[dict]:
+    rows = []
+    skip = 0
+    take = GROWFLOW_MAX_PAGE_SIZE
+    headers = {"Authorization": f"Bearer {token}"}
+    while True:
+        variables = {
+            "regionCode": region_code,
+            "licenseNumber": license_number,
+            "skip": skip,
+            "take": take,
+        }
+        data = growflow_post_json(
+            GROWFLOW_GRAPHQL_URL,
+            {"query": GROWFLOW_INVENTORY_QUERY, "variables": variables},
+            "GrowFlow inventory request",
+            headers=headers,
+        )
+        if data.get("errors"):
+            preview = json.dumps(data["errors"])[:800]
+            raise ValueError(f"GrowFlow inventory GraphQL errors: {preview}")
+        connection = ((data.get("data") or {}).get("inventories") or {})
+        items = connection.get("items") or []
+        rows.extend(flatten_growflow_inventory_item(item or {}, facility_label) for item in items)
+
+        total_count = connection.get("totalCount")
+        try:
+            total_count = int(total_count)
+        except (TypeError, ValueError):
+            total_count = None
+        if not items or len(items) < take or (total_count is not None and len(rows) >= total_count):
+            break
+        skip += len(items)
+    return rows
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_growflow_inventory_api(
+    client_id: str,
+    client_secret: str,
+    sources: tuple[tuple[str, str, str], ...],
+) -> pd.DataFrame:
+    token = fetch_growflow_access_token(client_id, client_secret)
+    rows = []
+    for region_code, license_number, facility_label in sources:
+        rows.extend(fetch_growflow_inventory_source(token, region_code, license_number, facility_label))
+    if not rows:
+        raise ValueError("GrowFlow inventory returned no rows.")
+    return pd.DataFrame(rows)
+
 def load_assignments_from_sheet(url: str, gid: str) -> dict:
     """Load strain→brand mapping from a two-column sheet tab (Strain, Brand)."""
     try:
@@ -1630,6 +1838,10 @@ _default_gid_b9 = saved_or_configured_setting(_saved, "gid_b9")
 _default_gid_assign = saved_or_configured_setting(_saved, "gid_assign")
 _default_gid_costs = saved_or_configured_setting(_saved, "gid_costs", DEFAULT_COSTS_GID)
 _default_gid_inventory = saved_or_configured_setting(_saved, "gid_inventory", DEFAULT_INVENTORY_GID)
+_growflow_client_id, _growflow_client_secret, _growflow_inventory_sources = growflow_inventory_api_config()
+_growflow_inventory_ready = bool(
+    _growflow_client_id and _growflow_client_secret and _growflow_inventory_sources
+)
 
 with st.sidebar:
     st.header("Data Source")
@@ -1655,10 +1867,21 @@ with st.sidebar:
         key="prod_gid_costs",
     )
     gid_inventory = st.text_input(
-        "Inventory GID",
+        "Inventory GID" if not _growflow_inventory_ready else "Inventory GID fallback",
         value=_default_gid_inventory,
         key="prod_gid_inventory",
     )
+    if _growflow_inventory_ready:
+        source_word = "source" if len(_growflow_inventory_sources) == 1 else "sources"
+        st.caption(
+            f"Inventory source: GrowFlow API ({len(_growflow_inventory_sources)} {source_word}); "
+            "cached for 5 minutes."
+        )
+    elif _growflow_client_id or _growflow_client_secret or _growflow_inventory_sources:
+        st.caption(
+            "GrowFlow inventory API is partially configured. Add client id, client secret, "
+            "and license number to Streamlit secrets to bypass the Inventory GID."
+        )
 
     if st.button("Load / Refresh", type="primary", width="stretch"):
         if sheet_url.strip():
@@ -1715,7 +1938,17 @@ if gid_costs.strip():
 
 inventory_df = pd.DataFrame()
 inventory_error = ""
-if gid_inventory.strip():
+if _growflow_inventory_ready:
+    try:
+        inventory_raw = load_growflow_inventory_api(
+            _growflow_client_id,
+            _growflow_client_secret,
+            _growflow_inventory_sources,
+        )
+        inventory_df = parse_inventory_tab(inventory_raw)
+    except Exception as e:
+        inventory_error = f"**GrowFlow Inventory API**: {e}"
+elif gid_inventory.strip():
     try:
         inventory_raw = load_tab(sheet_url, gid_inventory.strip())
         inventory_df = parse_inventory_tab(inventory_raw)

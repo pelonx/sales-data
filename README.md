@@ -67,6 +67,37 @@ order_sheet_gid = "0"
 
 `growflow_report_sync.gs` connects to the GrowFlow Wholesale Partner API with Auth0 client credentials, runs a configured GraphQL query, flattens the returned `items` rows, and writes them to a tab in the shared Google Sheet.
 
+### Direct Production inventory API
+
+The Production dashboard can load inventory directly from GrowFlow instead of the manually pasted Inventory worksheet. Add these secrets in Streamlit Cloud:
+
+```toml
+growflow_client_id = "..."
+growflow_client_secret = "..."
+growflow_region_code = "wa"
+growflow_license_number = "000021"
+growflow_facility_label = "B-9"
+```
+
+For multiple GrowFlow licenses/facilities, use `growflow_inventory_sources` instead of the single `growflow_license_number` fields:
+
+```toml
+growflow_client_id = "..."
+growflow_client_secret = "..."
+
+[[growflow_inventory_sources]]
+region_code = "wa"
+license_number = "000021"
+facility_label = "B-9"
+
+[[growflow_inventory_sources]]
+region_code = "wa"
+license_number = "000022"
+facility_label = "Block 13"
+```
+
+When those secrets are present, the dashboard fetches GrowFlow inventory directly and uses the Inventory GID only as a fallback for non-API setups. API results are cached for 5 minutes.
+
 To install:
 
 1. Open the shared Google Sheet.
