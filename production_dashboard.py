@@ -1569,6 +1569,17 @@ def clean_secret_value(value) -> str:
         (cleaned.startswith("'") and cleaned.endswith("'"))
     ):
         cleaned = cleaned[1:-1].strip()
+    markdown_link = re.fullmatch(r"\[([^\]]+)\]\(([^)]+)\)", cleaned)
+    if markdown_link:
+        cleaned = markdown_link.group(2).strip()
+    if len(cleaned) >= 2 and cleaned.startswith("<") and cleaned.endswith(">"):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+def normalize_growflow_audience(value: str) -> str:
+    cleaned = clean_secret_value(value)
+    if cleaned == "https://growflow.com/":
+        return "https://growflow.com"
     return cleaned
 
 def secret_or_env(*names: str, default: str = "") -> str:
@@ -1682,7 +1693,9 @@ def growflow_inventory_api_config() -> tuple[str, str, str, str, str, tuple[tupl
         "GROWFLOW_AUTH_URL",
         default=GROWFLOW_TOKEN_URL,
     )
-    audience = secret_or_env("growflow_audience", "GROWFLOW_AUDIENCE", default=GROWFLOW_AUDIENCE)
+    audience = normalize_growflow_audience(
+        secret_or_env("growflow_audience", "GROWFLOW_AUDIENCE", default=GROWFLOW_AUDIENCE)
+    )
     graphql_url = secret_or_env(
         "growflow_graphql_url",
         "growflow_api_url",
