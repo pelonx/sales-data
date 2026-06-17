@@ -5242,6 +5242,9 @@ with tab_contact:
         lic: _contact_month_sales_value(lic)
         for lic in df.index
     }
+    cf_category_by_lic = {}
+    cf_zip_by_lic = {}
+    cf_sales_rep_by_lic = {}
     cf_pareto_months = [m for m in window_months if m in months] or [contact_month]
     cf_pareto_totals = (
         df[cf_pareto_months]
@@ -5393,12 +5396,31 @@ with tab_contact:
                 "Sales Last Month",
                 pd.Series(0, index=_store_revenue_source.index),
             ).apply(parse_market_sales)
+        _store_revenue_source = _store_revenue_source.sort_values(
+            ["_Monthly Store Revenue", "Store Name"],
+            ascending=[False, True],
+        )
+        _contact_meta_source = _store_revenue_source.drop_duplicates("_Dashboard License", keep="first")
+
+        def _contact_meta_column(column):
+            if column not in _contact_meta_source:
+                return {}
+            return (
+                _contact_meta_source
+                .set_index("_Dashboard License")[column]
+                .fillna("")
+                .astype(str)
+                .to_dict()
+            )
+
         cf_monthly_store_revenue_by_lic = (
-            _store_revenue_source
-            .groupby("_Dashboard License")["_Monthly Store Revenue"]
-            .max()
+            _contact_meta_source
+            .set_index("_Dashboard License")["_Monthly Store Revenue"]
             .to_dict()
         )
+        cf_category_by_lic = _contact_meta_column("Map Category")
+        cf_zip_by_lic = _contact_meta_column("Zip")
+        cf_sales_rep_by_lic = _contact_meta_column("Territory Rep")
     cf_pool = []
     if cf_include_top_pareto:
         for _lic in cf_top_pareto_lics:
@@ -5462,6 +5484,7 @@ with tab_contact:
                 continue
             cf_pool.append(_lic)
             _category = _contact_row.get("_Selected Category") or _contact_row.get("Map Category", "")
+            cf_category_by_lic[_lic] = str(_category or cf_category_by_lic.get(_lic, "") or "").strip()
             _current_revenue = float(_contact_row.get("_Contact Month Revenue", 0) or 0)
             _risk = float(_contact_row.get("K. Savage Monthly Run Rate", 0) or 0)
             if str(_category).startswith("K Savage Lapsed") and _risk > 0:
@@ -5759,6 +5782,32 @@ with tab_contact:
                 _selector_rank_by_lic.get(lic, 0),
             ),
         )
+
+    def _contact_label_text(value, default="-"):
+        text = str(value or "").strip()
+        return text if text else default
+
+    def _contact_category(lic):
+        return _contact_label_text(cf_category_by_lic.get(lic), "Uncategorized")
+
+    def _contact_zip(lic):
+        return _contact_label_text(cf_zip_by_lic.get(lic))
+
+    def _contact_sales_rep(lic):
+        return _contact_label_text(cf_sales_rep_by_lic.get(lic))
+
+    st.markdown(
+        """
+        <div style="display:grid;grid-template-columns:2.15fr 0.9fr 1.25fr 1fr 1fr 0.75fr 0.9fr;gap:0.65rem;
+                    font-size:0.78rem;font-weight:700;color:#4B5563;text-transform:uppercase;letter-spacing:0;
+                    border-bottom:1px solid rgba(107,114,128,0.28);padding:0.25rem 0.2rem 0.35rem;margin-top:0.35rem;">
+          <div>Name</div><div>License #</div><div>Category</div><div>Balaclava Revenue</div>
+          <div>Store Revenue</div><div>Zip Code</div><div>Sales Rep</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     _visible_saved_matches = sum(1 for lic in display_lics if _has_logged_contact(lic))
     if not _saved_log.empty:
         with st.expander("Contact log match diagnostics"):
@@ -5790,9 +5839,14 @@ with tab_contact:
 
     for rank, lic in enumerate(display_lics, 1):
         store_name = df.loc[lic, "Store Name"]
-        revenue = cf_display_by_lic.get(lic, fmt_usd(df.loc[lic, contact_month]))
         has_saved = _has_logged_contact(lic)
-        label = f"{'✅ ' if has_saved else ''}#{rank}  {store_name}  ·  {lic}  ·  {revenue}"
+        balaclava_revenue = _contact_balaclava_sales(lic)
+        store_revenue = _contact_store_revenue(lic)
+        label = (
+            f"{'✅ ' if has_saved else ''}#{rank} {store_name} | {lic} | "
+            f"{_contact_category(lic)} | {fmt_usd(balaclava_revenue)} | "
+            f"{fmt_usd(store_revenue)} | {_contact_zip(lic)} | {_contact_sales_rep(lic)}"
+        )
         with st.expander(label):
             store_contact = _store_contact_for_lic(lic)
             st.markdown("**Store Contact**")
