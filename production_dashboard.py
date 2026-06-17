@@ -1562,30 +1562,39 @@ PROD_CONFIG_KEYS = {
     "gid_inventory": ("production_gid_inventory", "prod_gid_inventory", "PRODUCTION_GID_INVENTORY"),
 }
 
+def clean_secret_value(value) -> str:
+    cleaned = str(value or "").strip()
+    if len(cleaned) >= 2 and (
+        (cleaned.startswith('"') and cleaned.endswith('"')) or
+        (cleaned.startswith("'") and cleaned.endswith("'"))
+    ):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
 def secret_or_env(*names: str, default: str = "") -> str:
     for name in names:
         try:
-            value = st.secrets.get(name, "")
-            if str(value).strip():
-                return str(value).strip()
+            value = clean_secret_value(st.secrets.get(name, ""))
+            if value:
+                return value
         except Exception:
             pass
-        value = os.environ.get(name)
-        if value and value.strip():
-            return value.strip()
+        value = clean_secret_value(os.environ.get(name))
+        if value:
+            return value
     return default
 
 def _config_secret_or_env(key: str, default: str = "") -> str:
     for candidate in PROD_CONFIG_KEYS.get(key, ()):
         try:
-            value = st.secrets.get(candidate, "")
-            if str(value).strip():
-                return str(value).strip()
+            value = clean_secret_value(st.secrets.get(candidate, ""))
+            if value:
+                return value
         except Exception:
             pass
-        value = os.environ.get(candidate)
-        if value and value.strip():
-            return value.strip()
+        value = clean_secret_value(os.environ.get(candidate))
+        if value:
+            return value
     return default
 
 def saved_or_configured_setting(settings: dict, key: str, default: str = "") -> str:
@@ -1607,8 +1616,9 @@ def growflow_source_value(source, *names: str, default: str = "") -> str:
             value = source.get(name, "")
         except Exception:
             value = ""
-        if str(value).strip():
-            return str(value).strip()
+        value = clean_secret_value(value)
+        if value:
+            return value
     return default
 
 def growflow_inventory_sources_config() -> tuple[tuple[str, str, str], ...]:
@@ -1662,17 +1672,30 @@ def growflow_inventory_api_ready() -> bool:
     return bool(client_id and client_secret and sources)
 
 def growflow_api_error_preview(response: requests.Response, limit: int = 500) -> str:
-    text = response.text[:limit]
-    return re.sub(r'"access_token"\s*:\s*"[^"]+"', '"access_token":"REDACTED"', text)
+    text = (response.text or response.reason or "")[:limit]
+    text = re.sub(r'"access_token"\s*:\s*"[^"]+"', '"access_token":"REDACTED"', text)
+    text = re.sub(r'"client_secret"\s*:\s*"[^"]+"', '"client_secret":"REDACTED"', text)
+    text = re.sub(r"Bearer\s+[A-Za-z0-9._-]+", "Bearer REDACTED", text, flags=re.I)
+    return re.sub(r"([A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+", "JWT_REDACTED", text)
 
-def growflow_post_json(url: str, payload: dict, label: str, headers: dict | None = None, timeout: int = 30) -> dict:
-    response = requests.post(url, json=payload, headers=headers or {}, timeout=timeout)
+def growflow_json_response(response: requests.Response, label: str) -> dict:
     if response.status_code < 200 or response.status_code >= 300:
-        raise ValueError(f"{label} failed with HTTP {response.status_code}: {growflow_api_error_preview(response)}")
+        preview = growflow_api_error_preview(response)
+        if response.status_code == 401 and label.startswith("GrowFlow inventory request"):
+            raise ValueError(
+                f"{label} failed with HTTP 401 after GrowFlow issued an access token. "
+                "That usually means the API client lacks Partner API inventory access "
+                f"for the configured license. Response: {preview}"
+            )
+        raise ValueError(f"{label} failed with HTTP {response.status_code}: {preview}")
     try:
         return response.json()
     except ValueError as exc:
         raise ValueError(f"{label} did not return valid JSON: {response.text[:300]}") from exc
+
+def growflow_post_json(url: str, payload: dict, label: str, headers: dict | None = None, timeout: int = 30) -> dict:
+    response = requests.post(url, json=payload, headers=headers or {}, timeout=timeout)
+    return growflow_json_response(response, label)
 
 def fetch_growflow_access_token(client_id: str, client_secret: str) -> str:
     payload = {
@@ -1681,11 +1704,45 @@ def fetch_growflow_access_token(client_id: str, client_secret: str) -> str:
         "audience": GROWFLOW_AUDIENCE,
         "grant_type": "client_credentials",
     }
-    data = growflow_post_json(GROWFLOW_TOKEN_URL, payload, "GrowFlow token request", timeout=20)
-    token = str(data.get("access_token") or "").strip()
-    if not token:
-        raise ValueError("GrowFlow token request succeeded, but no access_token was returned.")
-    return token
+    attempts = (
+        ("JSON", {
+            "json": payload,
+            "headers": {"Accept": "application/json"},
+        }),
+        ("form-encoded", {
+            "data": payload,
+            "headers": {
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        }),
+    )
+    failures = []
+    for request_type, request_kwargs in attempts:
+        response = requests.post(GROWFLOW_TOKEN_URL, timeout=20, **request_kwargs)
+        if response.status_code < 200 or response.status_code >= 300:
+            failures.append(
+                f"{request_type} HTTP {response.status_code}: {growflow_api_error_preview(response)}"
+            )
+            continue
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise ValueError(
+                f"GrowFlow token request succeeded via {request_type}, but did not return valid JSON: "
+                f"{response.text[:300]}"
+            ) from exc
+        token = clean_secret_value(data.get("access_token"))
+        if not token:
+            raise ValueError(
+                f"GrowFlow token request succeeded via {request_type}, but no access_token was returned."
+            )
+        return token
+
+    raise ValueError(
+        "GrowFlow token request failed. Tried JSON and form-encoded client_credentials auth. "
+        + " | ".join(failures)
+    )
 
 def flatten_growflow_inventory_item(item: dict, facility_label: str) -> dict:
     product = item.get("product") or {}
@@ -1716,7 +1773,10 @@ def fetch_growflow_inventory_source(token: str, region_code: str, license_number
     rows = []
     skip = 0
     take = GROWFLOW_MAX_PAGE_SIZE
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
     while True:
         variables = {
             "regionCode": region_code,
@@ -1727,7 +1787,7 @@ def fetch_growflow_inventory_source(token: str, region_code: str, license_number
         data = growflow_post_json(
             GROWFLOW_GRAPHQL_URL,
             {"query": GROWFLOW_INVENTORY_QUERY, "variables": variables},
-            "GrowFlow inventory request",
+            f"GrowFlow inventory request for {region_code.upper()} license {license_number}",
             headers=headers,
         )
         if data.get("errors"):
