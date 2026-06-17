@@ -5797,13 +5797,13 @@ with tab_contact:
         return _contact_label_text(cf_sales_rep_by_lic.get(lic))
 
     contact_list_columns = [
-        ("Name", 34),
-        ("License #", 12),
-        ("Category", 24),
-        ("Balaclava Revenue", 18),
-        ("Store Revenue", 15),
-        ("Zip Code", 9),
-        ("Sales Rep", 12),
+        ("Name", 42, "2.2fr"),
+        ("License #", 13, "0.75fr"),
+        ("Category", 24, "1.25fr"),
+        ("Balaclava Revenue", 19, "1fr"),
+        ("Store Revenue", 16, "0.95fr"),
+        ("Zip Code", 10, "0.65fr"),
+        ("Sales Rep", 14, "0.8fr"),
     ]
 
     def _contact_list_cell(value, width):
@@ -5815,22 +5815,30 @@ with tab_contact:
     def _contact_list_row(values):
         return "  ".join(
             _contact_list_cell(value, width)
-            for value, (_, width) in zip(values, contact_list_columns)
+            for value, (_, width, _) in zip(values, contact_list_columns)
         )
 
-    contact_list_header = _contact_list_row([label for label, _ in contact_list_columns])
+    contact_list_grid = " ".join(grid_width for _, _, grid_width in contact_list_columns)
+    contact_list_header_cells = "".join(
+        f"<div>{html_lib.escape(label)}</div>"
+        for label, _, _ in contact_list_columns
+    )
     st.markdown(
         f"""
         <style>
           div[data-testid="stExpander"] summary p {{
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+            font-size: 0.88rem;
+            line-height: 1.35;
             white-space: pre;
           }}
         </style>
-        <pre style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;
+        <div style="display:grid;grid-template-columns:{contact_list_grid};gap:0.65rem;
                     font-size:0.78rem;font-weight:700;color:#4B5563;text-transform:uppercase;letter-spacing:0;
                     border-bottom:1px solid rgba(107,114,128,0.28);padding:0.25rem 0.2rem 0.35rem 2.35rem;
-                    margin:0.35rem 0 0.15rem;overflow-x:auto;background:transparent;">{html_lib.escape(contact_list_header)}</pre>
+                    margin:0.35rem 0 0.15rem;align-items:end;">
+          {contact_list_header_cells}
+        </div>
         """,
         unsafe_allow_html=True,
     )
