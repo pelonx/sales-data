@@ -1362,7 +1362,7 @@ def normalize_store_locations(raw_df):
         "Address": ["Address", "Street Address", "Address 1", "Line 1", "Street"],
         "City": ["City", "Town"],
         "State": ["State", "Province", "Region"],
-        "Zip": ["Zip", "ZIP", "Zip Code", "Postal Code"],
+        "Zip": ["Zip", "ZIP", "Zip Code", "ZIP Code", "Zipcode", "Postal Code", "PostalCode", "Postal"],
         "Latitude": ["Latitude", "Lat", "lat"],
         "Longitude": ["Longitude", "Lng", "Lon", "Long", "longitude", "lng", "lon"],
         "Google Place ID": ["Google Place ID", "Place ID", "place_id", "google_place_id"],
@@ -5264,6 +5264,11 @@ with tab_contact:
         st.success(cf_location_notice)
     if cf_location_warning:
         st.warning(cf_location_warning)
+    cf_rep_assignments = pd.DataFrame(columns=TERRITORY_REP_ASSIGNMENT_COLUMNS + ["License Key", "Store Key"])
+    try:
+        cf_rep_assignments, _ = load_territory_rep_assignments()
+    except Exception as exc:
+        st.warning(f"Could not load territory rep assignments for Store Contact Log: {exc}")
 
     cf_territory_stores = pd.DataFrame()
     if cf_locations is None or cf_locations.empty:
@@ -5277,6 +5282,7 @@ with tab_contact:
                 st.session_state.get("order_df"),
                 st.session_state.get("territory_active_days", 120),
             )
+            cf_territory_stores = apply_territory_rep_assignments(cf_territory_stores, cf_rep_assignments)
             cf_territory_stores, _ = enrich_territory_proximity(
                 cf_territory_stores,
                 st.session_state.get("territory_radius", 0.25),
@@ -5380,10 +5386,34 @@ with tab_contact:
                 cf_selected_designations.append(selector)
 
     df_license_by_key = {license_match_key(lic): lic for lic in df.index}
+    df_store_by_key = {}
+    for _lic in df.index:
+        _store_key = store_match_key(df.loc[_lic, "Store Name"])
+        if _store_key and _store_key not in df_store_by_key:
+            df_store_by_key[_store_key] = _lic
+
+    def _contact_dashboard_license(lic, store_name=""):
+        return (
+            df_license_by_key.get(license_match_key(lic), "")
+            or df_store_by_key.get(store_match_key(store_name), "")
+        )
+
+    def _contact_zip_from_row(row):
+        zip_value = clean_reference(_territory_clean_cell(row.get("Zip", "")))
+        if zip_value:
+            return zip_value
+        address_text = " ".join(
+            _territory_clean_cell(row.get(col, ""))
+            for col in ["Address", "City", "State"]
+        )
+        match = re.search(r"\b\d{5}(?:-\d{4})?\b", address_text)
+        return match.group(0) if match else ""
+
     if not cf_territory_stores.empty:
         _store_revenue_source = cf_territory_stores.copy()
-        _store_revenue_source["_Dashboard License"] = _store_revenue_source["License"].apply(
-            lambda lic: df_license_by_key.get(license_match_key(lic), "")
+        _store_revenue_source["_Dashboard License"] = _store_revenue_source.apply(
+            lambda row: _contact_dashboard_license(row.get("License", ""), row.get("Store Name", "")),
+            axis=1,
         )
         _store_revenue_source = _store_revenue_source[_store_revenue_source["_Dashboard License"].ne("")]
         if "Market Sales Last Month" in _store_revenue_source:
@@ -5421,6 +5451,29 @@ with tab_contact:
         cf_category_by_lic = _contact_meta_column("Map Category")
         cf_zip_by_lic = _contact_meta_column("Zip")
         cf_sales_rep_by_lic = _contact_meta_column("Territory Rep")
+
+    if cf_locations is not None and not cf_locations.empty:
+        for _, _location_row in normalize_store_locations(cf_locations).iterrows():
+            _lic = _contact_dashboard_license(
+                _location_row.get("License", ""),
+                _location_row.get("Store Name", ""),
+            )
+            if not _lic:
+                continue
+            _zip_value = _contact_zip_from_row(_location_row)
+            if _zip_value and not str(cf_zip_by_lic.get(_lic, "")).strip():
+                cf_zip_by_lic[_lic] = _zip_value
+
+    if not cf_rep_assignments.empty:
+        for _, _rep_row in cf_rep_assignments.iterrows():
+            _lic = (
+                df_license_by_key.get(_rep_row.get("License Key", ""), "")
+                or df_store_by_key.get(_rep_row.get("Store Key", ""), "")
+            )
+            _rep_value = _territory_clean_cell(_rep_row.get("Territory Rep", ""))
+            if _lic and _rep_value and not str(cf_sales_rep_by_lic.get(_lic, "")).strip():
+                cf_sales_rep_by_lic[_lic] = _rep_value
+
     cf_pool = []
     if cf_include_top_pareto:
         for _lic in cf_top_pareto_lics:
@@ -5465,8 +5518,9 @@ with tab_contact:
             )
         filtered_contact_stores = filtered_contact_stores[designation_mask].copy()
         selected_category = selected_category.reindex(filtered_contact_stores.index, fill_value="")
-        filtered_contact_stores["_Dashboard License"] = filtered_contact_stores["License"].apply(
-            lambda lic: df_license_by_key.get(license_match_key(lic), "")
+        filtered_contact_stores["_Dashboard License"] = filtered_contact_stores.apply(
+            lambda row: _contact_dashboard_license(row.get("License", ""), row.get("Store Name", "")),
+            axis=1,
         )
         filtered_contact_stores = filtered_contact_stores[filtered_contact_stores["_Dashboard License"].ne("")]
         filtered_contact_stores["_Selected Category"] = selected_category.reindex(filtered_contact_stores.index, fill_value="")
@@ -5796,56 +5850,9 @@ with tab_contact:
     def _contact_sales_rep(lic):
         return _contact_label_text(cf_sales_rep_by_lic.get(lic))
 
-    contact_list_columns = [
-        ("Name", 42, "2.2fr"),
-        ("License #", 13, "0.75fr"),
-        ("Category", 24, "1.25fr"),
-        ("Balaclava Revenue", 19, "1fr"),
-        ("Store Revenue", 16, "0.95fr"),
-        ("Zip Code", 10, "0.65fr"),
-        ("Sales Rep", 14, "0.8fr"),
-    ]
-
-    def _contact_list_cell(value, width):
-        text = re.sub(r"\s+", " ", str(value or "").strip())
-        if len(text) > width:
-            text = text[:max(0, width - 3)].rstrip() + "..."
-        return text.ljust(width)
-
-    def _contact_list_row(values):
-        return "  ".join(
-            _contact_list_cell(value, width)
-            for value, (_, width, _) in zip(values, contact_list_columns)
-        )
-
-    contact_list_grid = " ".join(grid_width for _, _, grid_width in contact_list_columns)
-    contact_list_header_cells = "".join(
-        f"<div>{html_lib.escape(label)}</div>"
-        for label, _, _ in contact_list_columns
-    )
-    st.markdown(
-        f"""
-        <style>
-          div[data-testid="stExpander"] summary p {{
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-            font-size: 0.88rem;
-            line-height: 1.35;
-            white-space: pre;
-          }}
-        </style>
-        <div style="display:grid;grid-template-columns:{contact_list_grid};gap:0.65rem;
-                    font-size:0.78rem;font-weight:700;color:#4B5563;text-transform:uppercase;letter-spacing:0;
-                    border-bottom:1px solid rgba(107,114,128,0.28);padding:0.25rem 0.2rem 0.35rem 2.35rem;
-                    margin:0.35rem 0 0.15rem;align-items:end;">
-          {contact_list_header_cells}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     _visible_saved_matches = sum(1 for lic in display_lics if _has_logged_contact(lic))
     if not _saved_log.empty:
-        with st.expander("Contact log match diagnostics"):
+        with st.expander("Contact log match diagnostics", key="contact_log_match_diagnostics"):
             st.caption(
                 f"{len(_saved_log)} saved contact entr{'y' if len(_saved_log) == 1 else 'ies'} loaded · "
                 f"{_visible_saved_matches} matched in current visible store list"
@@ -5872,6 +5879,58 @@ with tab_contact:
             d1.dataframe(_visible_sample, width="stretch", hide_index=True)
             d2.dataframe(_logged_sample, width="stretch", hide_index=True)
 
+    contact_list_columns = [
+        ("Name", 46),
+        ("License #", 13),
+        ("Category", 28),
+        ("Balaclava Revenue", 20),
+        ("Store Revenue", 19),
+        ("Zip Code", 13),
+        ("Sales Rep", 14),
+    ]
+
+    def _contact_list_cell(value, width):
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        if len(text) > width:
+            text = text[:max(0, width - 3)].rstrip() + "..."
+        return text.ljust(width)
+
+    def _contact_list_row(values):
+        return "  ".join(
+            _contact_list_cell(value, width)
+            for value, (_, width) in zip(values, contact_list_columns)
+        )
+
+    def _contact_expander_label(value):
+        return str(value).replace("\\", "\\\\").replace("$", "\\$")
+
+    contact_list_grid = " ".join(f"{width}ch" for _, width in contact_list_columns)
+    contact_list_header_cells = "".join(
+        f"<div>{html_lib.escape(label)}</div>"
+        for label, _ in contact_list_columns
+    )
+    st.markdown(
+        f"""
+        <style>
+          div[class*="st-key-contact_store_row_"][data-testid="stExpander"] summary p,
+          div[class*="st-key-contact_store_row_"] [data-testid="stExpander"] summary p {{
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+            font-size: 0.88rem;
+            line-height: 1.35;
+            white-space: pre;
+          }}
+        </style>
+        <div style="display:grid;grid-template-columns:{contact_list_grid};column-gap:2ch;
+                    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;
+                    font-size:0.88rem;font-weight:700;color:#4B5563;text-transform:uppercase;letter-spacing:0;
+                    border-bottom:1px solid rgba(107,114,128,0.28);padding:0.25rem 0.2rem 0.35rem 2.35rem;
+                    margin:0.35rem 0 0.15rem;align-items:end;overflow-x:auto;">
+          {contact_list_header_cells}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     for rank, lic in enumerate(display_lics, 1):
         store_name = df.loc[lic, "Store Name"]
         has_saved = _has_logged_contact(lic)
@@ -5887,7 +5946,8 @@ with tab_contact:
             _contact_zip(lic),
             _contact_sales_rep(lic),
         ])
-        with st.expander(label):
+        row_key = f"contact_store_row_{license_match_key(lic) or slugify(lic)}"
+        with st.expander(_contact_expander_label(label), key=row_key):
             store_contact = _store_contact_for_lic(lic)
             st.markdown("**Store Contact**")
             contact_cols = st.columns([1.25, 1.1, 0.8])
