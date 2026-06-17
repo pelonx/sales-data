@@ -5796,14 +5796,41 @@ with tab_contact:
     def _contact_sales_rep(lic):
         return _contact_label_text(cf_sales_rep_by_lic.get(lic))
 
+    contact_list_columns = [
+        ("Name", 34),
+        ("License #", 12),
+        ("Category", 24),
+        ("Balaclava Revenue", 18),
+        ("Store Revenue", 15),
+        ("Zip Code", 9),
+        ("Sales Rep", 12),
+    ]
+
+    def _contact_list_cell(value, width):
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        if len(text) > width:
+            text = text[:max(0, width - 3)].rstrip() + "..."
+        return text.ljust(width)
+
+    def _contact_list_row(values):
+        return "  ".join(
+            _contact_list_cell(value, width)
+            for value, (_, width) in zip(values, contact_list_columns)
+        )
+
+    contact_list_header = _contact_list_row([label for label, _ in contact_list_columns])
     st.markdown(
-        """
-        <div style="display:grid;grid-template-columns:2.15fr 0.9fr 1.25fr 1fr 1fr 0.75fr 0.9fr;gap:0.65rem;
+        f"""
+        <style>
+          div[data-testid="stExpander"] summary p {{
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+            white-space: pre;
+          }}
+        </style>
+        <pre style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;
                     font-size:0.78rem;font-weight:700;color:#4B5563;text-transform:uppercase;letter-spacing:0;
-                    border-bottom:1px solid rgba(107,114,128,0.28);padding:0.25rem 0.2rem 0.35rem;margin-top:0.35rem;">
-          <div>Name</div><div>License #</div><div>Category</div><div>Balaclava Revenue</div>
-          <div>Store Revenue</div><div>Zip Code</div><div>Sales Rep</div>
-        </div>
+                    border-bottom:1px solid rgba(107,114,128,0.28);padding:0.25rem 0.2rem 0.35rem 2.35rem;
+                    margin:0.35rem 0 0.15rem;overflow-x:auto;background:transparent;">{html_lib.escape(contact_list_header)}</pre>
         """,
         unsafe_allow_html=True,
     )
@@ -5842,11 +5869,16 @@ with tab_contact:
         has_saved = _has_logged_contact(lic)
         balaclava_revenue = _contact_balaclava_sales(lic)
         store_revenue = _contact_store_revenue(lic)
-        label = (
-            f"{'✅ ' if has_saved else ''}#{rank} {store_name} | {lic} | "
-            f"{_contact_category(lic)} | {fmt_usd(balaclava_revenue)} | "
-            f"{fmt_usd(store_revenue)} | {_contact_zip(lic)} | {_contact_sales_rep(lic)}"
-        )
+        label_store = f"{'OK' if has_saved else '  '} #{rank} {store_name}"
+        label = _contact_list_row([
+            label_store,
+            lic,
+            _contact_category(lic),
+            fmt_usd(balaclava_revenue),
+            fmt_usd(store_revenue),
+            _contact_zip(lic),
+            _contact_sales_rep(lic),
+        ])
         with st.expander(label):
             store_contact = _store_contact_for_lic(lic)
             st.markdown("**Store Contact**")
