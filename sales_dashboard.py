@@ -1766,6 +1766,8 @@ def geocode_store_locations(locations_df, api_key, limit=25):
     limit = int(limit or 0)
     successes = 0
     attempted = 0
+    failures = 0
+    skipped_missing_address = 0
     for idx, row in updated.iterrows():
         if attempted >= limit:
             break
@@ -1774,6 +1776,7 @@ def geocode_store_locations(locations_df, api_key, limit=25):
         address = location_address_query(row)
         if not row.get("Address") or not address:
             updated.at[idx, "Geocode Status"] = "Missing street address"
+            skipped_missing_address += 1
             continue
 
         attempted += 1
@@ -1786,6 +1789,7 @@ def geocode_store_locations(locations_df, api_key, limit=25):
             data = resp.json()
         except Exception as exc:
             updated.at[idx, "Geocode Status"] = f"Request failed: {exc}"
+            failures += 1
             continue
 
         status = data.get("status", "UNKNOWN")
@@ -1800,7 +1804,13 @@ def geocode_store_locations(locations_df, api_key, limit=25):
             successes += 1
         else:
             updated.at[idx, "Geocode Status"] = status
-    return updated, {"attempted": attempted, "successes": successes}
+            failures += 1
+    return updated, {
+        "attempted": attempted,
+        "successes": successes,
+        "failures": failures,
+        "skipped_missing_address": skipped_missing_address,
+    }
 
 def render_territory_location_data_panel(locations, coord_ready):
     with st.expander("Location Data", expanded=locations.empty):
@@ -1885,24 +1895,38 @@ def render_territory_geocode_panel(locations, coord_ready, api_key):
     if locations.empty:
         return
 
-    missing_geocode = locations[
-        (~coord_ready)
-        & locations["Address"].astype(str).str.strip().ne("")
+    missing_coordinate_rows = locations[~coord_ready]
+    missing_geocode = missing_coordinate_rows[
+        missing_coordinate_rows["Address"].astype(str).str.strip().ne("")
     ]
+    missing_address_count = max(0, len(missing_coordinate_rows) - len(missing_geocode))
     with st.expander("Geocode Missing Coordinates", expanded=False):
         if api_key:
             stale_count = locations["Geocode Status"].astype(str).str.contains("expired", case=False, na=False).sum()
             st.caption(
-                f"{len(missing_geocode):,} address row(s) are missing coordinates. "
+                f"{len(missing_coordinate_rows):,} row(s) are missing coordinates. "
+                f"{len(missing_geocode):,} have addresses ready to geocode. "
+                f"{missing_address_count:,} need a street address first. "
                 f"{stale_count:,} Google-geocoded row(s) need refresh after the 30-day cache window."
             )
+            default_geocode_limit = (
+                max(1, min(500, len(missing_geocode)))
+                if len(missing_geocode)
+                else 1
+            )
+            max_geocode_limit = max(1, len(missing_geocode))
+            geocode_limit_key = "territory_geocode_limit"
+            try:
+                existing_geocode_limit = int(st.session_state.get(geocode_limit_key, default_geocode_limit) or 1)
+            except Exception:
+                existing_geocode_limit = default_geocode_limit
+            st.session_state[geocode_limit_key] = min(max(1, existing_geocode_limit), max_geocode_limit)
             geocode_limit = st.number_input(
                 "Max addresses to geocode now",
                 min_value=1,
-                max_value=max(1, min(250, len(missing_geocode))),
-                value=max(1, min(25, len(missing_geocode))) if len(missing_geocode) else 1,
+                max_value=max_geocode_limit,
                 step=1,
-                key="territory_geocode_limit",
+                key=geocode_limit_key,
             )
             if st.button(
                 "Geocode Missing Addresses",
@@ -1914,7 +1938,8 @@ def render_territory_geocode_panel(locations, coord_ready, api_key):
                 updated_locations, summary = geocode_store_locations(locations, api_key, geocode_limit)
                 save_store_locations(updated_locations)
                 st.session_state["territory_notice"] = (
-                    f"Geocoded {summary['successes']} of {summary['attempted']} attempted address rows."
+                    f"Geocoded {summary['successes']} of {summary['attempted']} attempted address rows. "
+                    f"{summary['failures']} failed; {summary['skipped_missing_address']} missing street address."
                 )
                 st.rerun()
         else:
