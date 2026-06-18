@@ -6512,6 +6512,11 @@ with tab_territory:
 
     locations = load_store_locations()
     locations, auto_location_notice, auto_location_warning = maybe_auto_load_territory_locations(locations)
+    try:
+        territory_master_locations, _ = load_master_store_universe()
+        locations = merge_store_locations_with_master(locations, territory_master_locations)
+    except Exception as exc:
+        st.warning(f"Could not merge {MASTER_STORE_SOURCE_NAME} into Territory Map: {exc}")
     if auto_location_notice:
         st.success(auto_location_notice)
     if auto_location_warning:
@@ -6536,32 +6541,40 @@ with tab_territory:
         if ord_df is None:
             st.warning("Order data is not loaded, so brand-carrying recommendations cannot be calculated yet.")
 
-        control_cols = st.columns([1, 1, 1, 2])
-        radius_miles = control_cols[0].selectbox(
-            "Radius",
-            options=[0.25, 0.5, 1.0],
-            format_func=lambda v: f"{v:g} mi",
-            key="territory_radius",
-        )
-        active_days = control_cols[1].number_input(
-            "Brand Window",
-            min_value=30,
-            max_value=365,
-            value=120,
-            step=30,
-            key="territory_active_days",
-            help="Paid orders inside this many days from the latest order date count as active brand placement.",
-        )
-        include_missing = control_cols[2].checkbox(
-            "Show Unmapped",
-            value=not bool(coord_ready.any()),
-            key="territory_include_missing",
-        )
-        search_term = control_cols[3].text_input(
-            "Search",
-            placeholder="Store name, license, city...",
-            key="territory_search",
-        )
+        territory_filter_state_key = "territory_map_applied_filters"
+        territory_filter_defaults = {
+            "radius": st.session_state.get("territory_radius", 0.25),
+            "active_days": int(st.session_state.get("territory_active_days", 120) or 120),
+            "include_missing": bool(st.session_state.get("territory_include_missing", not bool(coord_ready.any()))),
+            "search": str(st.session_state.get("territory_search", "") or ""),
+            "rep": str(st.session_state.get("territory_rep_filter", "All") or "All"),
+            "brand": str(st.session_state.get("territory_brand_filter", "All") or "All"),
+            "use_google_map": bool(st.session_state.get("territory_use_google_map", bool(google_maps_browser_key()))),
+            "designations": None,
+        }
+        applied_filters = st.session_state.get(territory_filter_state_key)
+        if not isinstance(applied_filters, dict):
+            applied_filters = territory_filter_defaults.copy()
+            st.session_state[territory_filter_state_key] = applied_filters
+        else:
+            for filter_key, default_value in territory_filter_defaults.items():
+                applied_filters.setdefault(filter_key, default_value)
+
+        radius_options = [0.25, 0.5, 1.0]
+        radius_miles = applied_filters.get("radius", territory_filter_defaults["radius"])
+        if radius_miles not in radius_options:
+            radius_miles = territory_filter_defaults["radius"]
+        active_days = int(applied_filters.get("active_days", territory_filter_defaults["active_days"]) or 120)
+        active_days = min(365, max(30, active_days))
+        include_missing = bool(applied_filters.get("include_missing", territory_filter_defaults["include_missing"]))
+        search_term = str(applied_filters.get("search", "") or "")
+        rep_filter = str(applied_filters.get("rep", "All") or "All")
+        brand_filter = str(applied_filters.get("brand", "All") or "All")
+        use_google_map = bool(applied_filters.get("use_google_map", bool(google_maps_browser_key())))
+        if not google_maps_browser_key():
+            use_google_map = False
+        st.session_state["territory_radius"] = radius_miles
+        st.session_state["territory_active_days"] = active_days
 
         stores = build_territory_store_table(locations, df, months, ord_df, active_days)
         stores = apply_territory_rep_assignments(stores, rep_assignments)
@@ -6579,22 +6592,22 @@ with tab_territory:
         m4.metric("Pitch Mayfield", f"{pitch_count:,}")
         m5.metric("Market Sales", fmt_usd(market_sales))
 
-        filter_cols = st.columns([1, 1, 1])
         rep_options = ["All"] + sorted([rep for rep in stores["Territory Rep"].dropna().unique().tolist() if str(rep).strip()])
-        rep_filter = filter_cols[0].selectbox("Rep", rep_options, key="territory_rep_filter")
-        brand_filter = filter_cols[1].selectbox("Brand", ["All"] + TERRITORY_BRANDS, key="territory_brand_filter")
-        use_google_map = filter_cols[2].checkbox(
-            "Use Google Maps",
-            value=bool(google_maps_browser_key()),
-            disabled=not bool(google_maps_browser_key()),
-            key="territory_use_google_map",
-            help="Uses `google_maps_browser_key` when present; otherwise falls back to the geocoding key.",
-        )
+        if rep_filter not in rep_options:
+            rep_filter = "All"
+            applied_filters["rep"] = rep_filter
+        brand_options = ["All"] + TERRITORY_BRANDS
+        if brand_filter not in brand_options:
+            brand_filter = "All"
+            applied_filters["brand"] = brand_filter
 
         category_values = set(stores["Map Category"].dropna().astype(str))
+        territory_selector_excluded_categories = (
+            set() if include_missing else TERRITORY_SELECTOR_EXCLUDED_CATEGORIES
+        )
         selector_category_values = (
             category_values | TERRITORY_SELECTOR_ALWAYS_VISIBLE_CATEGORIES
-        ) - TERRITORY_SELECTOR_EXCLUDED_CATEGORIES
+        ) - territory_selector_excluded_categories
         designation_options = [
             category for category in TERRITORY_SELECTOR_ORDER
             if category in selector_category_values
@@ -6604,11 +6617,36 @@ with tab_territory:
             if category in selector_category_values and category not in designation_options
         ])
         designation_options.extend(sorted(selector_category_values - set(designation_options)))
-        selected_designations = []
+        applied_designations = applied_filters.get("designations")
+        if applied_designations is None:
+            selected_designations = designation_options[:]
+        else:
+            applied_designation_set = set(applied_designations)
+            selected_designations = [
+                designation for designation in designation_options
+                if designation in applied_designation_set
+            ]
+
+        pending_radius_key = "territory_pending_radius"
+        pending_active_days_key = "territory_pending_active_days"
+        pending_include_missing_key = "territory_pending_include_missing"
+        pending_search_key = "territory_pending_search"
+        pending_rep_key = "territory_pending_rep_filter"
+        pending_brand_key = "territory_pending_brand_filter"
+        pending_google_key = "territory_pending_use_google_map"
+        if st.session_state.get(pending_radius_key) not in radius_options:
+            st.session_state[pending_radius_key] = radius_miles
+        if st.session_state.get(pending_rep_key) not in rep_options:
+            st.session_state[pending_rep_key] = rep_filter
+        if st.session_state.get(pending_brand_key) not in brand_options:
+            st.session_state[pending_brand_key] = brand_filter
+        if not google_maps_browser_key():
+            st.session_state[pending_google_key] = False
+
         if designation_options:
             dot_styles = []
             for designation in designation_options:
-                designation_key = f"territory_designation_{slugify(designation)}"
+                designation_key = f"territory_pending_designation_{slugify(designation)}"
                 pin_color = TERRITORY_MAP_COLORS.get(designation, "#6E7781")
                 dot_styles.append(f"""
                   div[class*="st-key-{designation_key}"] [data-testid="stWidgetLabel"] p::before {{
@@ -6630,17 +6668,109 @@ with tab_territory:
             select_all_designations = action_cols[0].button("All", key="territory_designations_all")
             clear_designations = action_cols[1].button("None", key="territory_designations_none")
             for designation in designation_options:
-                designation_key = f"territory_designation_{slugify(designation)}"
+                designation_key = f"territory_pending_designation_{slugify(designation)}"
                 if select_all_designations:
                     st.session_state[designation_key] = True
                 elif clear_designations:
                     st.session_state[designation_key] = False
 
-            designation_cols = st.columns(3)
-            for idx, designation in enumerate(designation_options):
-                designation_key = f"territory_designation_{slugify(designation)}"
-                if designation_cols[idx % 3].checkbox(designation, value=True, key=designation_key):
-                    selected_designations.append(designation)
+        with st.form("territory_map_filters", clear_on_submit=False):
+            control_cols = st.columns([1, 1, 1, 2])
+            pending_radius_kwargs = {
+                "options": radius_options,
+                "format_func": lambda v: f"{v:g} mi",
+                "key": pending_radius_key,
+            }
+            if pending_radius_key not in st.session_state:
+                pending_radius_kwargs["index"] = radius_options.index(radius_miles)
+            pending_radius = control_cols[0].selectbox(
+                "Radius",
+                **pending_radius_kwargs,
+            )
+            pending_active_days_kwargs = {
+                "min_value": 30,
+                "max_value": 365,
+                "step": 30,
+                "key": pending_active_days_key,
+                "help": "Paid orders inside this many days from the latest order date count as active brand placement.",
+            }
+            if pending_active_days_key not in st.session_state:
+                pending_active_days_kwargs["value"] = active_days
+            pending_active_days = control_cols[1].number_input(
+                "Brand Window",
+                **pending_active_days_kwargs,
+            )
+            pending_include_missing_kwargs = {"key": pending_include_missing_key}
+            if pending_include_missing_key not in st.session_state:
+                pending_include_missing_kwargs["value"] = include_missing
+            pending_include_missing = control_cols[2].checkbox(
+                "Show Unmapped",
+                **pending_include_missing_kwargs,
+            )
+            pending_search_kwargs = {
+                "placeholder": "Store name, license, city...",
+                "key": pending_search_key,
+            }
+            if pending_search_key not in st.session_state:
+                pending_search_kwargs["value"] = search_term
+            pending_search_term = control_cols[3].text_input(
+                "Search",
+                **pending_search_kwargs,
+            )
+
+            filter_cols = st.columns([1, 1, 1])
+            pending_rep_kwargs = {"options": rep_options, "key": pending_rep_key}
+            if pending_rep_key not in st.session_state:
+                pending_rep_kwargs["index"] = rep_options.index(rep_filter)
+            pending_rep_filter = filter_cols[0].selectbox("Rep", **pending_rep_kwargs)
+            pending_brand_kwargs = {"options": brand_options, "key": pending_brand_key}
+            if pending_brand_key not in st.session_state:
+                pending_brand_kwargs["index"] = brand_options.index(brand_filter)
+            pending_brand_filter = filter_cols[1].selectbox("Brand", **pending_brand_kwargs)
+            pending_google_kwargs = {
+                "disabled": not bool(google_maps_browser_key()),
+                "key": pending_google_key,
+                "help": "Uses `google_maps_browser_key` when present; otherwise falls back to the geocoding key.",
+            }
+            if pending_google_key not in st.session_state:
+                pending_google_kwargs["value"] = use_google_map
+            pending_use_google_map = filter_cols[2].checkbox(
+                "Use Google Maps",
+                **pending_google_kwargs,
+            )
+
+            pending_selected_designations = []
+            if designation_options:
+                designation_cols = st.columns(3)
+                for idx, designation in enumerate(designation_options):
+                    designation_key = f"territory_pending_designation_{slugify(designation)}"
+                    designation_kwargs = {"key": designation_key}
+                    if designation_key not in st.session_state:
+                        designation_kwargs["value"] = designation in selected_designations
+                    if designation_cols[idx % 3].checkbox(designation, **designation_kwargs):
+                        pending_selected_designations.append(designation)
+
+            load_map = st.form_submit_button("Load Map", type="primary", width="stretch")
+
+        if load_map:
+            st.session_state[territory_filter_state_key] = {
+                "radius": pending_radius,
+                "active_days": int(pending_active_days),
+                "include_missing": bool(pending_include_missing),
+                "search": pending_search_term,
+                "rep": pending_rep_filter,
+                "brand": pending_brand_filter,
+                "use_google_map": bool(pending_use_google_map),
+                "designations": pending_selected_designations,
+            }
+            st.session_state["territory_radius"] = pending_radius
+            st.session_state["territory_active_days"] = int(pending_active_days)
+            st.session_state["territory_include_missing"] = bool(pending_include_missing)
+            st.session_state["territory_search"] = pending_search_term
+            st.session_state["territory_rep_filter"] = pending_rep_filter
+            st.session_state["territory_brand_filter"] = pending_brand_filter
+            st.session_state["territory_use_google_map"] = bool(pending_use_google_map)
+            st.rerun()
 
         filtered_stores = stores.copy()
         unmapped_mask = filtered_stores["Latitude"].isna() | filtered_stores["Longitude"].isna()
@@ -6664,7 +6794,7 @@ with tab_territory:
                 )
             if TERRITORY_ALL_OTHER_SELECTOR in selected_designations:
                 other_mask = ~designation_mask
-                other_mask = other_mask & ~filtered_stores["Map Category"].isin(TERRITORY_SELECTOR_EXCLUDED_CATEGORIES)
+                other_mask = other_mask & ~filtered_stores["Map Category"].isin(territory_selector_excluded_categories)
                 all_other_mask = other_mask
                 designation_mask = designation_mask | other_mask
             if include_missing:
