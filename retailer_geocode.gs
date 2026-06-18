@@ -1,7 +1,11 @@
-const RETAILER_SPREADSHEET_ID = '1kY5e6SXd7eQ7GJx-jg6M1R60WCCZ9I_25Eb7ZmuDKHw';
-const RETAILER_SHEET_GID = 1421425539;
-const RETAILER_GEOCODE_BATCH_SIZE = 50;
-const RETAILER_GEOCODE_SLEEP_MS = 150;
+function retailerGeocodeConfig_() {
+  return {
+    spreadsheetId: '1kY5e6SXd7eQ7GJx-jg6M1R60WCCZ9I_25Eb7ZmuDKHw',
+    sheetGid: 1421425539,
+    batchSize: 50,
+    sleepMs: 150
+  };
+}
 
 function checkRetailerGeocodeSetup() {
   const sheet = getRetailerGeocodeSheet_();
@@ -15,6 +19,7 @@ function checkRetailerGeocodeSetup() {
 }
 
 function geocodeRetailerAddresses() {
+  const config = retailerGeocodeConfig_();
   const sheet = getRetailerGeocodeSheet_();
   const values = sheet.getDataRange().getValues();
   if (values.length < 2) {
@@ -44,7 +49,7 @@ function geocodeRetailerAddresses() {
   let failed = 0;
 
   for (let i = 0; i < rows.length; i++) {
-    if (attempted >= RETAILER_GEOCODE_BATCH_SIZE) {
+    if (attempted >= config.batchSize) {
       break;
     }
 
@@ -91,7 +96,7 @@ function geocodeRetailerAddresses() {
       failed++;
     }
 
-    Utilities.sleep(RETAILER_GEOCODE_SLEEP_MS);
+    Utilities.sleep(config.sleepMs);
   }
 
   Logger.log(`Attempted: ${attempted}; success: ${success}; failed: ${failed}; skipped: ${skipped}.`);
@@ -114,10 +119,11 @@ function deleteRetailerGeocodeTriggers() {
 }
 
 function getRetailerGeocodeSheet_() {
-  const spreadsheet = SpreadsheetApp.openById(RETAILER_SPREADSHEET_ID);
-  const sheet = spreadsheet.getSheets().find(s => s.getSheetId() === RETAILER_SHEET_GID);
+  const config = retailerGeocodeConfig_();
+  const spreadsheet = SpreadsheetApp.openById(config.spreadsheetId);
+  const sheet = spreadsheet.getSheets().find(s => s.getSheetId() === config.sheetGid);
   if (!sheet) {
-    throw new Error(`Retailer sheet not found for gid ${RETAILER_SHEET_GID}`);
+    throw new Error(`Retailer sheet not found for gid ${config.sheetGid}`);
   }
   return sheet;
 }
