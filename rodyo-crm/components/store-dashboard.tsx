@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Check, Map as MapIcon, SlidersHorizontal } from "lucide-react";
 import type { DashboardSnapshot } from "@/lib/dashboard-data";
-import { TERRITORY_MAP_COLORS, formatUsd, type StoreRollup } from "@/lib/rules";
+import { TERRITORY_BRANDS, TERRITORY_MAP_COLORS, formatUsd, type StoreRollup } from "@/lib/rules";
 
 type StoreDashboardProps = {
   snapshot: DashboardSnapshot;
@@ -15,7 +15,8 @@ type DetailTab = "contact" | "orders" | "buyer" | "history" | "samples";
 type SortKey = "store" | "designation" | "balaclava" | "storeRevenue" | "rep" | "log";
 type SortDirection = "asc" | "desc";
 type BalaclavaSalesFilter = "all" | "1000" | "5000";
-type StoreRevenueFilter = "all" | "50000" | "100000";
+type StoreRevenueFilter = "all" | "300" | "50000" | "100000";
+type BrandFilter = "all" | (typeof TERRITORY_BRANDS)[number];
 type ParetoFilter = "all" | "top30" | "eighty";
 type PriorityFilter = "all" | "lapsed" | "open-lane";
 type MapLibreModule = typeof import("maplibre-gl");
@@ -25,6 +26,7 @@ type MapLibreMarker = import("maplibre-gl").Marker;
 type StoreFilters = {
   balaclavaSales: BalaclavaSalesFilter;
   storeRevenue: StoreRevenueFilter;
+  brand: BrandFilter;
   pareto: ParetoFilter;
   priority: PriorityFilter;
   region: string;
@@ -39,6 +41,7 @@ type BuyerContactPatch = {
 const defaultStoreFilters: StoreFilters = {
   balaclavaSales: "all",
   storeRevenue: "all",
+  brand: "all",
   pareto: "all",
   priority: "all",
   region: "all"
@@ -76,8 +79,8 @@ function summarizeStores(stores: StoreRollup[]) {
     mappedStores: stores.filter((store) => (
       Number.isFinite(store.latitude) && Number.isFinite(store.longitude)
     )).length,
-    lapsedPriority: stores.filter((store) => store.mapCategory.startsWith("K Savage Lapsed")).length,
-    openLanePriority: stores.filter((store) => store.mapCategory.startsWith("Open Lane")).length,
+    lapsedPriority: stores.filter((store) => matchesPriorityFilter(store, "lapsed")).length,
+    openLanePriority: stores.filter((store) => matchesPriorityFilter(store, "open-lane")).length,
     pitchMayfield: stores.filter((store) => store.mapCategory === "Pitch Mayfield").length
   };
 }
@@ -141,6 +144,34 @@ function sortStores(stores: StoreRollup[], sortKey: SortKey, direction: SortDire
   });
 }
 
+function priorityText(store: StoreRollup) {
+  return `${store.mapCategory} ${store.recommendation}`.toLowerCase();
+}
+
+function matchesPriorityFilter(store: StoreRollup, priority: PriorityFilter) {
+  const text = priorityText(store);
+  if (priority === "lapsed") {
+    return text.includes("lapsed");
+  }
+  if (priority === "open-lane") {
+    return text.includes("open lane");
+  }
+  return true;
+}
+
+function matchesBrandFilter(store: StoreRollup, brand: BrandFilter) {
+  if (brand === "K. Savage") {
+    return store.kSavageActiveRevenue > 0 || store.latestMonthRevenue > 0;
+  }
+  if (brand === "Mayfield") {
+    return store.mayfieldActiveRevenue > 0;
+  }
+  if (brand === "Leisure Land") {
+    return store.leisureLandActiveRevenue > 0;
+  }
+  return true;
+}
+
 function applyStoreFilters(stores: StoreRollup[], filters: StoreFilters) {
   let nextStores = stores;
 
@@ -154,10 +185,12 @@ function applyStoreFilters(stores: StoreRollup[], filters: StoreFilters) {
     nextStores = nextStores.filter((store) => store.marketSalesLastMonth >= minimum);
   }
 
-  if (filters.priority === "lapsed") {
-    nextStores = nextStores.filter((store) => store.mapCategory.startsWith("K Savage Lapsed"));
-  } else if (filters.priority === "open-lane") {
-    nextStores = nextStores.filter((store) => store.mapCategory.startsWith("Open Lane"));
+  if (filters.brand !== "all") {
+    nextStores = nextStores.filter((store) => matchesBrandFilter(store, filters.brand));
+  }
+
+  if (filters.priority !== "all") {
+    nextStores = nextStores.filter((store) => matchesPriorityFilter(store, filters.priority));
   }
 
   if (filters.region !== "all") {
@@ -266,15 +299,6 @@ function StoreDetailHero({ store }: { store: StoreRollup }) {
 
   return (
     <div className="detail-hero">
-      <div className="detail-hero-line">
-        <span
-          className="dot"
-          style={{
-            background: TERRITORY_MAP_COLORS[store.mapCategory] ?? "var(--muted)"
-          }}
-        />
-        <strong>{store.mapCategory}</strong>
-      </div>
       <div className="detail-hero-grid">
         <span>License</span>
         <strong>{store.license || "-"}</strong>
@@ -929,8 +953,23 @@ export function StoreDashboard({ snapshot }: StoreDashboardProps) {
                 )}
               >
                 <option value="all">Any range</option>
+                <option value="300">$300+</option>
                 <option value="50000">$50k+</option>
                 <option value="100000">$100k+</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Brand</label>
+              <select
+                value={draftFilters.brand}
+                onChange={(event) => updateDraftFilter("brand", event.target.value as BrandFilter)}
+              >
+                <option value="all">All brands</option>
+                {TERRITORY_BRANDS.map((brand) => (
+                  <option key={brand} value={brand}>
+                    {brand}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="field">
