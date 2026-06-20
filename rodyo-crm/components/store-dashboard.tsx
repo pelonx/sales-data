@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, Map, SlidersHorizontal } from "lucide-react";
 import type { DashboardSnapshot } from "@/lib/dashboard-data";
 import { TERRITORY_MAP_COLORS, formatUsd, type StoreRollup } from "@/lib/rules";
@@ -8,6 +8,16 @@ import { TERRITORY_MAP_COLORS, formatUsd, type StoreRollup } from "@/lib/rules";
 type StoreDashboardProps = {
   snapshot: DashboardSnapshot;
 };
+
+type DetailTab = "contact" | "orders" | "buyer" | "history" | "samples";
+
+const detailTabs: { id: DetailTab; label: string }[] = [
+  { id: "contact", label: "Contact" },
+  { id: "orders", label: "Orders" },
+  { id: "buyer", label: "Buyer" },
+  { id: "history", label: "History" },
+  { id: "samples", label: "Samples" }
+];
 
 function CheckState({ active, label }: { active: boolean; label: string }) {
   return (
@@ -30,8 +40,156 @@ function summarizeStores(stores: StoreRollup[]) {
   };
 }
 
+function storeKey(store: StoreRollup) {
+  return store.storeId || store.licenseKey || store.license;
+}
+
+function formatDate(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(date);
+}
+
+function DetailStat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="metric">
+      <div className="metric-label">{label}</div>
+      <div className="metric-value">{value}</div>
+    </div>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value?: string | number | null }) {
+  return (
+    <div className="detail-row">
+      <span>{label}</span>
+      <strong>{value || "-"}</strong>
+    </div>
+  );
+}
+
+function StoreDetailContent({ activeTab, store }: { activeTab: DetailTab; store: StoreRollup }) {
+  if (activeTab === "orders") {
+    return (
+      <div className="detail-stack">
+        <div className="metrics detail-metrics">
+          <DetailStat label="Orders" value={store.orders.toLocaleString()} />
+          <DetailStat label="Brand Revenue" value={formatUsd(store.brandRevenue)} />
+        </div>
+        <div className="detail-list">
+          <DetailRow label="Last order" value={formatDate(store.lastOrderAt)} />
+          <DetailRow label="Order #" value={store.lastOrderNumber} />
+          <DetailRow label="K. Savage last order" value={formatDate(store.kSavageLastOrderAt)} />
+          <DetailRow label="K. Savage history" value={formatUsd(store.kSavageHistoricalRevenue)} />
+          <DetailRow label="Mayfield active" value={formatUsd(store.mayfieldActiveRevenue)} />
+          <DetailRow label="Leisure Land active" value={formatUsd(store.leisureLandActiveRevenue)} />
+        </div>
+      </div>
+    );
+  }
+
+  if (activeTab === "buyer") {
+    return (
+      <div className="detail-stack">
+        <div className="detail-list">
+          <DetailRow label="Buyer" value={store.contactName} />
+          <DetailRow label="Phone" value={store.phoneNumber} />
+          <DetailRow label="Email" value={store.email} />
+          <DetailRow label="License" value={store.license} />
+          <DetailRow label="Rep" value={store.territoryRep} />
+          <DetailRow label="County" value={store.county} />
+          <DetailRow label="Location" value={[store.city, store.state, store.zip].filter(Boolean).join(", ")} />
+        </div>
+      </div>
+    );
+  }
+
+  if (activeTab === "history") {
+    return (
+      <div className="detail-stack">
+        <div className="detail-tabs">
+          <CheckState active={store.hasContactEver} label="Any log" />
+          <CheckState active={store.hasContactThisMonth} label="This month" />
+          <CheckState active={store.hasContactThisWeek} label="This week" />
+        </div>
+        <div className="detail-list">
+          <DetailRow label="Log count" value={store.contactLogCount.toLocaleString()} />
+          <DetailRow label="Last contact" value={formatDate(store.lastContactDate)} />
+          <DetailRow label="Method" value={store.lastContactMethod} />
+          <DetailRow label="Person" value={store.lastContactPerson} />
+        </div>
+        {store.lastContactNotes ? <p className="detail-note">{store.lastContactNotes}</p> : null}
+      </div>
+    );
+  }
+
+  if (activeTab === "samples") {
+    return (
+      <div className="detail-stack">
+        <div className="metrics detail-metrics">
+          <DetailStat label="Sample Drops" value={store.sampleDropCount.toLocaleString()} />
+          <DetailStat label="Latest Drop" value={formatDate(store.latestSampleDate)} />
+        </div>
+        <div className="detail-list">
+          <DetailRow label="Brand" value={store.latestSampleBrand} />
+          <DetailRow label="Product" value={store.latestSampleProduct} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="detail-stack">
+      <div className="metrics detail-metrics">
+        <DetailStat label="Latest Month" value={formatUsd(store.latestMonthRevenue)} />
+        <DetailStat label="Market Sales" value={formatUsd(store.marketSalesLastMonth)} />
+      </div>
+      <div className="detail-tabs">
+        <CheckState active={store.hasContactEver} label="Any log" />
+        <CheckState active={store.hasContactThisMonth} label="This month" />
+        <CheckState active={store.hasContactThisWeek} label="This week" />
+      </div>
+      <div className="form-grid">
+        <div className="field">
+          <label>Contact method</label>
+          <select defaultValue="">
+            <option value="">Select</option>
+            <option>In-person</option>
+            <option>Phone</option>
+            <option>Email</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>Initials</label>
+          <select defaultValue="">
+            <option value="">Select</option>
+            <option>DK</option>
+            <option>CH</option>
+          </select>
+        </div>
+      </div>
+      <button className="primary-button" type="button">
+        Save Contact Log
+      </button>
+    </div>
+  );
+}
+
 export function StoreDashboard({ snapshot }: StoreDashboardProps) {
   const [storeQuery, setStoreQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<DetailTab>("contact");
+  const [selectedStoreKey, setSelectedStoreKey] = useState(() => (
+    snapshot.stores[0] ? storeKey(snapshot.stores[0]) : ""
+  ));
   const normalizedStoreQuery = storeQuery.trim().toLowerCase();
   const filteredStores = useMemo(() => {
     if (!normalizedStoreQuery) {
@@ -44,10 +202,20 @@ export function StoreDashboard({ snapshot }: StoreDashboardProps) {
     ));
   }, [normalizedStoreQuery, snapshot.stores]);
   const metrics = useMemo(() => summarizeStores(filteredStores), [filteredStores]);
-  const firstStore = filteredStores[0];
+  const selectedStore = filteredStores.find((store) => storeKey(store) === selectedStoreKey) || filteredStores[0];
   const rowMeta = normalizedStoreQuery
     ? `${filteredStores.length.toLocaleString()} of ${snapshot.stores.length.toLocaleString()} rows`
     : `${filteredStores.length.toLocaleString()} rows`;
+
+  useEffect(() => {
+    if (!filteredStores.length) {
+      setSelectedStoreKey("");
+      return;
+    }
+    if (!filteredStores.some((store) => storeKey(store) === selectedStoreKey)) {
+      setSelectedStoreKey(storeKey(filteredStores[0]));
+    }
+  }, [filteredStores, selectedStoreKey]);
 
   return (
     <div className="app-shell">
@@ -179,7 +347,18 @@ export function StoreDashboard({ snapshot }: StoreDashboardProps) {
               </thead>
               <tbody>
                 {filteredStores.map((store) => (
-                  <tr key={store.licenseKey || store.license}>
+                  <tr
+                    key={storeKey(store)}
+                    className={selectedStore && storeKey(store) === storeKey(selectedStore) ? "is-selected" : ""}
+                    tabIndex={0}
+                    onClick={() => setSelectedStoreKey(storeKey(store))}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedStoreKey(storeKey(store));
+                      }
+                    }}
+                  >
                     <td>
                       <div className="store-name">{store.storeName}</div>
                       <div className="store-subtext">
@@ -214,61 +393,26 @@ export function StoreDashboard({ snapshot }: StoreDashboardProps) {
 
           <aside className="panel store-detail">
             <div className="detail-title">
-              <h3>{firstStore?.storeName ?? "Select a store"}</h3>
+              <h3>{selectedStore?.storeName ?? "Select a store"}</h3>
               <span className="caption">
-                {firstStore ? `${firstStore.license} · ${firstStore.city ?? ""}` : "Store detail drawer"}
+                {selectedStore ? `${selectedStore.license} · ${selectedStore.city ?? ""}` : "Store detail drawer"}
               </span>
             </div>
-            <div className="detail-tabs">
-              <button className="active" type="button">
-                Contact
-              </button>
-              <button type="button">Orders</button>
-              <button type="button">Buyer</button>
-              <button type="button">History</button>
-              <button type="button">Samples</button>
-            </div>
-            {firstStore ? (
-              <>
-                <div className="metrics" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", margin: 0 }}>
-                  <div className="metric">
-                    <div className="metric-label">Latest Month</div>
-                    <div className="metric-value">{formatUsd(firstStore.latestMonthRevenue)}</div>
-                  </div>
-                  <div className="metric">
-                    <div className="metric-label">Market Sales</div>
-                    <div className="metric-value">{formatUsd(firstStore.marketSalesLastMonth)}</div>
-                  </div>
-                </div>
-                <div className="detail-tabs">
-                  <CheckState active={firstStore.hasContactEver} label="Any log" />
-                  <CheckState active={firstStore.hasContactThisMonth} label="This month" />
-                  <CheckState active={firstStore.hasContactThisWeek} label="This week" />
-                </div>
-                <div className="form-grid">
-                  <div className="field">
-                    <label>Contact method</label>
-                    <select defaultValue="">
-                      <option value="">Select</option>
-                      <option>In-person</option>
-                      <option>Phone</option>
-                      <option>Email</option>
-                    </select>
-                  </div>
-                  <div className="field">
-                    <label>Initials</label>
-                    <select defaultValue="">
-                      <option value="">Select</option>
-                      <option>DK</option>
-                      <option>CH</option>
-                    </select>
-                  </div>
-                </div>
-                <button className="primary-button" type="button">
-                  Save Contact Log
+            <div className="detail-tabs" role="tablist" aria-label="Store detail sections">
+              {detailTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  className={activeTab === tab.id ? "active" : ""}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  {tab.label}
                 </button>
-              </>
-            ) : null}
+              ))}
+            </div>
+            {selectedStore ? <StoreDetailContent activeTab={activeTab} store={selectedStore} /> : null}
           </aside>
         </section>
       </main>
