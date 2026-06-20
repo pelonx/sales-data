@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
 import { Check, Map, SlidersHorizontal } from "lucide-react";
 import type { DashboardSnapshot } from "@/lib/dashboard-data";
 import { TERRITORY_MAP_COLORS, formatUsd, type StoreRollup } from "@/lib/rules";
@@ -10,6 +11,12 @@ type StoreDashboardProps = {
 };
 
 type DetailTab = "contact" | "orders" | "buyer" | "history" | "samples";
+
+type BuyerContactPatch = {
+  contactName: string | null;
+  phoneNumber: string | null;
+  email: string | null;
+};
 
 const detailTabs: { id: DetailTab; label: string }[] = [
   { id: "contact", label: "Contact" },
@@ -134,7 +141,121 @@ function StoreDetailHero({ store }: { store: StoreRollup }) {
   );
 }
 
-function StoreDetailContent({ activeTab, store }: { activeTab: DetailTab; store: StoreRollup }) {
+function BuyerEditor({
+  store,
+  onSaved
+}: {
+  store: StoreRollup;
+  onSaved: (storeId: string, buyer: BuyerContactPatch) => void;
+}) {
+  const [contactName, setContactName] = useState(store.contactName ?? "");
+  const [phoneNumber, setPhoneNumber] = useState(store.phoneNumber ?? "");
+  const [email, setEmail] = useState(store.email ?? "");
+  const [isSaving, setIsSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setContactName(store.contactName ?? "");
+    setPhoneNumber(store.phoneNumber ?? "");
+    setEmail(store.email ?? "");
+    setMessage("");
+  }, [store.contactName, store.email, store.phoneNumber, store.storeId]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!store.storeId) {
+      setMessage("This store is missing a Supabase store id.");
+      return;
+    }
+
+    setIsSaving(true);
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/store-contacts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          storeId: store.storeId,
+          contactName,
+          phoneNumber,
+          email
+        })
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Could not save buyer contact.");
+      }
+
+      onSaved(result.storeId, {
+        contactName: result.contactName,
+        phoneNumber: result.phoneNumber,
+        email: result.email
+      });
+      setMessage("Saved");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not save buyer contact.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <form className="detail-stack" onSubmit={handleSubmit}>
+      <div className="form-grid">
+        <div className="field">
+          <label>Buyer</label>
+          <input
+            value={contactName}
+            onChange={(event) => setContactName(event.target.value)}
+            placeholder="Buyer name"
+          />
+        </div>
+        <div className="field">
+          <label>Phone</label>
+          <input
+            value={phoneNumber}
+            onChange={(event) => setPhoneNumber(event.target.value)}
+            placeholder="Phone number"
+            type="tel"
+          />
+        </div>
+        <div className="field">
+          <label>Email</label>
+          <input
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="Email address"
+            type="email"
+          />
+        </div>
+      </div>
+      <button className="primary-button detail-save-button" type="submit" disabled={isSaving}>
+        {isSaving ? "Saving..." : "Save Buyer"}
+      </button>
+      {message ? <div className="status-message">{message}</div> : null}
+      <div className="detail-list">
+        <DetailRow label="License" value={store.license} />
+        <DetailRow label="Rep" value={store.territoryRep} />
+        <DetailRow label="County" value={store.county} />
+        <DetailRow label="Location" value={[store.city, store.state, store.zip].filter(Boolean).join(", ")} />
+      </div>
+    </form>
+  );
+}
+
+function StoreDetailContent({
+  activeTab,
+  store,
+  onBuyerSaved
+}: {
+  activeTab: DetailTab;
+  store: StoreRollup;
+  onBuyerSaved: (storeId: string, buyer: BuyerContactPatch) => void;
+}) {
   if (activeTab === "orders") {
     return (
       <div className="detail-stack">
@@ -155,19 +276,7 @@ function StoreDetailContent({ activeTab, store }: { activeTab: DetailTab; store:
   }
 
   if (activeTab === "buyer") {
-    return (
-      <div className="detail-stack">
-        <div className="detail-list">
-          <DetailRow label="Buyer" value={store.contactName} />
-          <DetailRow label="Phone" value={store.phoneNumber} />
-          <DetailRow label="Email" value={store.email} />
-          <DetailRow label="License" value={store.license} />
-          <DetailRow label="Rep" value={store.territoryRep} />
-          <DetailRow label="County" value={store.county} />
-          <DetailRow label="Location" value={[store.city, store.state, store.zip].filter(Boolean).join(", ")} />
-        </div>
-      </div>
-    );
+    return <BuyerEditor store={store} onSaved={onBuyerSaved} />;
   }
 
   if (activeTab === "history") {
@@ -242,6 +351,7 @@ function StoreDetailContent({ activeTab, store }: { activeTab: DetailTab; store:
 }
 
 export function StoreDashboard({ snapshot }: StoreDashboardProps) {
+  const [stores, setStores] = useState(snapshot.stores);
   const [storeQuery, setStoreQuery] = useState("");
   const [activeTab, setActiveTab] = useState<DetailTab>("contact");
   const [selectedStoreKey, setSelectedStoreKey] = useState(() => (
@@ -250,19 +360,23 @@ export function StoreDashboard({ snapshot }: StoreDashboardProps) {
   const normalizedStoreQuery = storeQuery.trim().toLowerCase();
   const filteredStores = useMemo(() => {
     if (!normalizedStoreQuery) {
-      return snapshot.stores;
+      return stores;
     }
-    return snapshot.stores.filter((store) => (
+    return stores.filter((store) => (
       store.storeName.toLowerCase().includes(normalizedStoreQuery) ||
       store.license.toLowerCase().includes(normalizedStoreQuery) ||
       store.licenseKey.toLowerCase().includes(normalizedStoreQuery)
     ));
-  }, [normalizedStoreQuery, snapshot.stores]);
+  }, [normalizedStoreQuery, stores]);
   const metrics = useMemo(() => summarizeStores(filteredStores), [filteredStores]);
   const selectedStore = filteredStores.find((store) => storeKey(store) === selectedStoreKey) || filteredStores[0];
   const rowMeta = normalizedStoreQuery
-    ? `${filteredStores.length.toLocaleString()} of ${snapshot.stores.length.toLocaleString()} rows`
+    ? `${filteredStores.length.toLocaleString()} of ${stores.length.toLocaleString()} rows`
     : `${filteredStores.length.toLocaleString()} rows`;
+
+  useEffect(() => {
+    setStores(snapshot.stores);
+  }, [snapshot.stores]);
 
   useEffect(() => {
     if (!filteredStores.length) {
@@ -273,6 +387,12 @@ export function StoreDashboard({ snapshot }: StoreDashboardProps) {
       setSelectedStoreKey(storeKey(filteredStores[0]));
     }
   }, [filteredStores, selectedStoreKey]);
+
+  function handleBuyerSaved(storeId: string, buyer: BuyerContactPatch) {
+    setStores((currentStores) => currentStores.map((store) => (
+      store.storeId === storeId ? { ...store, ...buyer } : store
+    )));
+  }
 
   return (
     <div className="app-shell">
@@ -480,7 +600,13 @@ export function StoreDashboard({ snapshot }: StoreDashboardProps) {
                 </button>
               ))}
             </div>
-            {selectedStore ? <StoreDetailContent activeTab={activeTab} store={selectedStore} /> : null}
+            {selectedStore ? (
+              <StoreDetailContent
+                activeTab={activeTab}
+                store={selectedStore}
+                onBuyerSaved={handleBuyerSaved}
+              />
+            ) : null}
           </aside>
         </section>
       </main>
