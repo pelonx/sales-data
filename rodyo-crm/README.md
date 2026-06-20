@@ -45,6 +45,34 @@ The first migration creates:
 3. Build UI only against parity-checked views.
 4. Move sync jobs from Apps Script/Streamlit into server-side jobs once the schema is stable.
 
+## Import Current Data
+
+The import runs from your computer in Terminal. It reads the current shared Google Sheet, then writes into Supabase using `.env.local`.
+
+From the repo root:
+
+```bash
+cd rodyo-crm
+python3 -m pip install -r scripts/requirements.txt
+python3 scripts/import_current_data.py --dry-run
+python3 scripts/import_current_data.py
+```
+
+What each command does:
+
+- `cd rodyo-crm`: moves into the V2 project folder.
+- `python3 -m pip install -r scripts/requirements.txt`: installs the Python packages the importer needs.
+- `python3 scripts/import_current_data.py --dry-run`: checks that it can read and parse the Google Sheet tabs. It does not change Supabase.
+- `python3 scripts/import_current_data.py`: imports into Supabase.
+
+If you need to intentionally wipe and reload imported CRM tables:
+
+```bash
+python3 scripts/import_current_data.py --replace
+```
+
+Use `--replace` only when you are sure you want to clear and reload imported tables.
+
 Planning docs:
 
 - `docs/v2-rules-inventory.md`
