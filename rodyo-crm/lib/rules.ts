@@ -43,6 +43,8 @@ export type StoreRollup = {
   storeName: string;
   city?: string | null;
   zip?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   territoryRep?: string | null;
   mapCategory: string;
   recommendation: string;

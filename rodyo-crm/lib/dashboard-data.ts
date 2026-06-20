@@ -20,6 +20,8 @@ const demoStores: StoreRollup[] = [
     storeName: "Zips Cannabis",
     city: "Tacoma",
     zip: "98409",
+    latitude: 47.219,
+    longitude: -122.484,
     territoryRep: "DK",
     mapCategory: "Carries K. Savage",
     recommendation: "Maintain K. Savage",
@@ -39,6 +41,8 @@ const demoStores: StoreRollup[] = [
     storeName: "Kush21 Sodo",
     city: "Seattle",
     zip: "98134",
+    latitude: 47.58,
+    longitude: -122.335,
     territoryRep: "CH",
     mapCategory: "K Savage Lapsed - High Priority",
     recommendation: "K Savage Lapsed",
@@ -58,6 +62,8 @@ const demoStores: StoreRollup[] = [
     storeName: "Main Street Marijuana East",
     city: "Vancouver",
     zip: "98682",
+    latitude: 45.653,
+    longitude: -122.538,
     territoryRep: "DK",
     mapCategory: "Open Lane - High Priority",
     recommendation: "Open lane",
@@ -76,7 +82,9 @@ const demoStores: StoreRollup[] = [
 function summarize(stores: StoreRollup[]) {
   return {
     totalRetailers: stores.length,
-    mappedStores: stores.length,
+    mappedStores: stores.filter((store) => (
+      Number.isFinite(store.latitude) && Number.isFinite(store.longitude)
+    )).length,
     lapsedPriority: stores.filter((store) => store.mapCategory.startsWith("K Savage Lapsed")).length,
     openLanePriority: stores.filter((store) => store.mapCategory.startsWith("Open Lane")).length,
     pitchMayfield: stores.filter((store) => store.mapCategory === "Pitch Mayfield").length
@@ -100,8 +108,8 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
   const { data, error } = await supabase
     .from("crm_store_rollup")
     .select("*")
-    .order("market_sales_last_month", { ascending: false })
-    .limit(50);
+    .order("market_sales_last_month", { ascending: false, nullsFirst: false })
+    .order("store_name", { ascending: true });
 
   if (error || !data) {
     return demoSnapshot();
@@ -113,6 +121,8 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
     storeName: String(row.store_name ?? "Unnamed Store"),
     city: row.city,
     zip: row.zip,
+    latitude: row.latitude === null || row.latitude === undefined ? null : Number(row.latitude),
+    longitude: row.longitude === null || row.longitude === undefined ? null : Number(row.longitude),
     territoryRep: row.territory_rep,
     mapCategory: String(row.map_category ?? "No recent brand"),
     recommendation: String(row.recommendation ?? ""),
