@@ -152,6 +152,7 @@ select {
 
 .field input,
 .field select,
+.field textarea,
 .multi-select-trigger {
   width: 100%;
   color: var(--text);
@@ -159,6 +160,11 @@ select {
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 9px 10px;
+}
+
+.field textarea {
+  min-height: 96px;
+  resize: vertical;
 }
 
 .multi-select {

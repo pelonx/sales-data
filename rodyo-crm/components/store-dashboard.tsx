@@ -43,6 +43,16 @@ type BuyerContactPatch = {
   email: string | null;
 };
 
+type ContactLogPatch = {
+  storeId: string;
+  dateContacted: string | null;
+  contactMethod: string | null;
+  initials: string | null;
+  personContacted: string | null;
+  notes: string | null;
+  savedAt: string | null;
+};
+
 const defaultStoreFilters: StoreFilters = {
   balaclavaSales: "all",
   storeRevenue: "all",
@@ -326,6 +336,44 @@ function formatDate(value?: string | null) {
   }).format(date);
 }
 
+function localDateInputValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function localDateFromInput(value?: string | null) {
+  const date = value ? new Date(`${value}T00:00:00`) : new Date();
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
+function startOfWeek(date: Date) {
+  const start = new Date(date);
+  const daysSinceMonday = (start.getDay() + 6) % 7;
+  start.setDate(start.getDate() - daysSinceMonday);
+  start.setHours(0, 0, 0, 0);
+  return start;
+}
+
+function isContactThisMonth(dateValue?: string | null) {
+  const contactDate = localDateFromInput(dateValue);
+  const today = new Date();
+  return (
+    contactDate.getFullYear() === today.getFullYear()
+    && contactDate.getMonth() === today.getMonth()
+  );
+}
+
+function isContactThisWeek(dateValue?: string | null) {
+  const contactDate = localDateFromInput(dateValue);
+  contactDate.setHours(0, 0, 0, 0);
+  const weekStart = startOfWeek(new Date());
+  const nextWeekStart = new Date(weekStart);
+  nextWeekStart.setDate(nextWeekStart.getDate() + 7);
+  return contactDate >= weekStart && contactDate < nextWeekStart;
+}
+
 function DetailStat({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="metric">
@@ -532,6 +580,145 @@ function BuyerEditor({
         <DetailRow label="County" value={store.county} />
         <DetailRow label="Location" value={[store.city, store.state, store.zip].filter(Boolean).join(", ")} />
       </div>
+    </form>
+  );
+}
+
+function ContactLogForm({
+  store,
+  onSaved
+}: {
+  store: StoreRollup;
+  onSaved: (storeId: string, contactLog: ContactLogPatch) => void;
+}) {
+  const [dateContacted, setDateContacted] = useState(localDateInputValue());
+  const [contactMethod, setContactMethod] = useState("");
+  const [initials, setInitials] = useState(store.territoryRep ?? "");
+  const [personContacted, setPersonContacted] = useState(store.contactName ?? "");
+  const [notes, setNotes] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setDateContacted(localDateInputValue());
+    setContactMethod("");
+    setInitials(store.territoryRep ?? "");
+    setPersonContacted(store.contactName ?? "");
+    setNotes("");
+    setMessage("");
+  }, [store.contactName, store.storeId, store.territoryRep]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!store.storeId) {
+      setMessage("This store is missing a Supabase store id.");
+      return;
+    }
+
+    setIsSaving(true);
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/contact-logs", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          storeId: store.storeId,
+          license: store.license,
+          licenseKey: store.licenseKey,
+          storeName: store.storeName,
+          dateContacted,
+          contactMethod,
+          initials,
+          personContacted,
+          notes
+        })
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Could not save contact log.");
+      }
+
+      onSaved(result.storeId, {
+        storeId: result.storeId,
+        dateContacted: result.dateContacted,
+        contactMethod: result.contactMethod,
+        initials: result.initials,
+        personContacted: result.personContacted,
+        notes: result.notes,
+        savedAt: result.savedAt
+      });
+      setNotes("");
+      setMessage("Saved");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not save contact log.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <form className="detail-stack" onSubmit={handleSubmit}>
+      <div className="detail-tabs">
+        <CheckState active={store.hasContactEver} label="Any log" />
+        <CheckState active={store.hasContactThisMonth} label="This month" />
+        <CheckState active={store.hasContactThisWeek} label="This week" />
+      </div>
+      <div className="form-grid">
+        <div className="field">
+          <label>Date contacted</label>
+          <input
+            value={dateContacted}
+            onChange={(event) => setDateContacted(event.target.value)}
+            type="date"
+          />
+        </div>
+        <div className="field">
+          <label>Contact method</label>
+          <select
+            value={contactMethod}
+            onChange={(event) => setContactMethod(event.target.value)}
+          >
+            <option value="">Select</option>
+            <option>In-person</option>
+            <option>Phone</option>
+            <option>Email</option>
+            <option>Text</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>Initials</label>
+          <input
+            value={initials}
+            onChange={(event) => setInitials(event.target.value.toUpperCase())}
+            placeholder="Rep initials"
+          />
+        </div>
+        <div className="field">
+          <label>Person contacted</label>
+          <input
+            value={personContacted}
+            onChange={(event) => setPersonContacted(event.target.value)}
+            placeholder="Buyer or staff name"
+          />
+        </div>
+      </div>
+      <div className="field">
+        <label>Notes</label>
+        <textarea
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          placeholder="What happened, next step, objection, commitment..."
+          rows={4}
+        />
+      </div>
+      <button className="primary-button detail-save-button" type="submit" disabled={isSaving}>
+        {isSaving ? "Saving..." : "Save Contact Log"}
+      </button>
+      {message ? <div className="status-message">{message}</div> : null}
     </form>
   );
 }
@@ -745,12 +932,14 @@ function StoreDetailDrawer({
   selectedStore,
   activeTab,
   setActiveTab,
-  onBuyerSaved
+  onBuyerSaved,
+  onContactLogSaved
 }: {
   selectedStore?: StoreRollup;
   activeTab: DetailTab;
   setActiveTab: (tab: DetailTab) => void;
   onBuyerSaved: (storeId: string, buyer: BuyerContactPatch) => void;
+  onContactLogSaved: (storeId: string, contactLog: ContactLogPatch) => void;
 }) {
   return (
     <aside className="panel store-detail">
@@ -796,6 +985,7 @@ function StoreDetailDrawer({
           activeTab={activeTab}
           store={selectedStore}
           onBuyerSaved={onBuyerSaved}
+          onContactLogSaved={onContactLogSaved}
         />
       ) : null}
     </aside>
@@ -805,11 +995,13 @@ function StoreDetailDrawer({
 function StoreDetailContent({
   activeTab,
   store,
-  onBuyerSaved
+  onBuyerSaved,
+  onContactLogSaved
 }: {
   activeTab: DetailTab;
   store: StoreRollup;
   onBuyerSaved: (storeId: string, buyer: BuyerContactPatch) => void;
+  onContactLogSaved: (storeId: string, contactLog: ContactLogPatch) => void;
 }) {
   if (activeTab === "orders") {
     return (
@@ -869,35 +1061,7 @@ function StoreDetailContent({
   }
 
   return (
-    <div className="detail-stack">
-      <div className="detail-tabs">
-        <CheckState active={store.hasContactEver} label="Any log" />
-        <CheckState active={store.hasContactThisMonth} label="This month" />
-        <CheckState active={store.hasContactThisWeek} label="This week" />
-      </div>
-      <div className="form-grid">
-        <div className="field">
-          <label>Contact method</label>
-          <select defaultValue="">
-            <option value="">Select</option>
-            <option>In-person</option>
-            <option>Phone</option>
-            <option>Email</option>
-          </select>
-        </div>
-        <div className="field">
-          <label>Initials</label>
-          <select defaultValue="">
-            <option value="">Select</option>
-            <option>DK</option>
-            <option>CH</option>
-          </select>
-        </div>
-      </div>
-      <button className="primary-button" type="button">
-        Save Contact Log
-      </button>
-    </div>
+    <ContactLogForm store={store} onSaved={onContactLogSaved} />
   );
 }
 
@@ -964,6 +1128,24 @@ export function StoreDashboard({ snapshot }: StoreDashboardProps) {
   function handleBuyerSaved(storeId: string, buyer: BuyerContactPatch) {
     setStores((currentStores) => currentStores.map((store) => (
       store.storeId === storeId ? { ...store, ...buyer } : store
+    )));
+  }
+
+  function handleContactLogSaved(storeId: string, contactLog: ContactLogPatch) {
+    setStores((currentStores) => currentStores.map((store) => (
+      store.storeId === storeId
+        ? {
+          ...store,
+          contactLogCount: store.contactLogCount + 1,
+          hasContactEver: true,
+          hasContactThisMonth: store.hasContactThisMonth || isContactThisMonth(contactLog.dateContacted),
+          hasContactThisWeek: store.hasContactThisWeek || isContactThisWeek(contactLog.dateContacted),
+          lastContactDate: contactLog.dateContacted || contactLog.savedAt,
+          lastContactMethod: contactLog.contactMethod,
+          lastContactPerson: contactLog.personContacted,
+          lastContactNotes: contactLog.notes
+        }
+        : store
     )));
   }
 
@@ -1273,6 +1455,7 @@ export function StoreDashboard({ snapshot }: StoreDashboardProps) {
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               onBuyerSaved={handleBuyerSaved}
+              onContactLogSaved={handleContactLogSaved}
             />
           </section>
         ) : (
@@ -1299,6 +1482,7 @@ export function StoreDashboard({ snapshot }: StoreDashboardProps) {
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               onBuyerSaved={handleBuyerSaved}
+              onContactLogSaved={handleContactLogSaved}
             />
           </section>
         )}
