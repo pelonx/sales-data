@@ -36,6 +36,7 @@ export type StoreRollup = {
   recommendation: string;
   priorityLevel?: PriorityLevel | "" | null;
   revenueTotal: number;
+  latestMonth?: string | null;
   latestMonthRevenue: number;
   latestBrandMonth?: string | null;
   latestMonthBrandRevenue: number;

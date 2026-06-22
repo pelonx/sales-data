@@ -317,6 +317,20 @@ textarea {
   margin-top: 4px;
 }
 
+.metric-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.metric-label-row strong {
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(340px, 0.65fr);

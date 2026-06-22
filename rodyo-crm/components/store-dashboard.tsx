@@ -482,6 +482,21 @@ function formatDate(value?: string | null) {
   }).format(date);
 }
 
+function formatMonth(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(date);
+}
+
 function localDateInputValue(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -550,10 +565,14 @@ function LatestMonthStat({ store }: { store: StoreRollup }) {
   const brandTotal = store.latestMonthBrandRevenue || 0;
   const total = brandTotal > 0 ? brandTotal : store.latestMonthRevenue;
   const showContributions = brandTotal > 0;
+  const latestMonthLabel = formatMonth(store.latestMonth);
 
   return (
     <div className="metric latest-month-card">
-      <div className="metric-label">Latest Month</div>
+      <div className="metric-label metric-label-row">
+        <span>Latest Month</span>
+        {latestMonthLabel ? <strong>{latestMonthLabel}</strong> : null}
+      </div>
       {showContributions ? (
         <div className="brand-contributions">
           {latestMonthBrandContributions(store).map((contribution) => (
