@@ -101,6 +101,9 @@ const TRIP_ORIGIN = {
   longitude: -122.4443
 };
 const GOOGLE_MAPS_ROUTE_STOP_LIMIT = 10;
+const ROUTE_LINE_SOURCE_ID = "trip-route-line-source";
+const ROUTE_LINE_CASING_LAYER_ID = "trip-route-line-casing";
+const ROUTE_LINE_LAYER_ID = "trip-route-line";
 type Coordinates = {
   latitude: number;
   longitude: number;
@@ -223,6 +226,31 @@ function googleMapsRouteUrl(stores: StoreRollup[]) {
     params.set("waypoints", waypointStores.map(mapsCoordinate).join("|"));
   }
   return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
+function routeLineData(stores: StoreRollup[]) {
+  const coordinates = [
+    [TRIP_ORIGIN.longitude, TRIP_ORIGIN.latitude],
+    ...stores
+      .filter(hasStoreCoordinates)
+      .map((store) => [Number(store.longitude), Number(store.latitude)])
+  ];
+
+  return {
+    type: "FeatureCollection" as const,
+    features: coordinates.length > 1
+      ? [
+        {
+          type: "Feature" as const,
+          properties: {},
+          geometry: {
+            type: "LineString" as const,
+            coordinates
+          }
+        }
+      ]
+      : []
+  };
 }
 
 function textSortValue(value?: string | null) {
@@ -898,10 +926,12 @@ function createPopupContent(store: StoreRollup) {
 
 function StoreMap({
   stores,
+  routeStores = [],
   selectedStore,
   onSelect
 }: {
   stores: StoreRollup[];
+  routeStores?: StoreRollup[];
   selectedStore?: StoreRollup;
   onSelect: (storeKeyValue: string) => void;
 }) {
@@ -911,6 +941,7 @@ function StoreMap({
   const markersRef = useRef<Map<string, { marker: MapLibreMarker; element: HTMLButtonElement }>>(new Map());
   const [isMapReady, setIsMapReady] = useState(false);
   const mappedStores = useMemo(() => stores.filter(hasStoreCoordinates), [stores]);
+  const routeData = useMemo(() => routeLineData(routeStores), [routeStores]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1026,6 +1057,52 @@ function StoreMap({
   }, [isMapReady, mappedStores, onSelect, selectedStore]);
 
   useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady) {
+      return;
+    }
+
+    if (!map.getSource(ROUTE_LINE_SOURCE_ID)) {
+      map.addSource(ROUTE_LINE_SOURCE_ID, {
+        type: "geojson",
+        data: routeData
+      });
+      map.addLayer({
+        id: ROUTE_LINE_CASING_LAYER_ID,
+        type: "line",
+        source: ROUTE_LINE_SOURCE_ID,
+        layout: {
+          "line-cap": "round",
+          "line-join": "round"
+        },
+        paint: {
+          "line-color": "#101418",
+          "line-opacity": 0.72,
+          "line-width": 8
+        }
+      });
+      map.addLayer({
+        id: ROUTE_LINE_LAYER_ID,
+        type: "line",
+        source: ROUTE_LINE_SOURCE_ID,
+        layout: {
+          "line-cap": "round",
+          "line-join": "round"
+        },
+        paint: {
+          "line-color": "#7dc2ae",
+          "line-opacity": 0.92,
+          "line-width": 4
+        }
+      });
+      return;
+    }
+
+    const source = map.getSource(ROUTE_LINE_SOURCE_ID) as { setData?: (data: typeof routeData) => void } | undefined;
+    source?.setData?.(routeData);
+  }, [isMapReady, routeData]);
+
+  useEffect(() => {
     markersRef.current.forEach(({ element }, key) => {
       element.classList.toggle("is-selected", Boolean(selectedStore && key === storeKey(selectedStore)));
     });
@@ -1108,6 +1185,7 @@ function TripPlanner({
         <div className="trip-map-body">
           <StoreMap
             stores={mappedStores}
+            routeStores={orderedTripStores}
             selectedStore={selectedStore}
             onSelect={onSelectStore}
           />
