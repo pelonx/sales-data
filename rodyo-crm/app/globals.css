@@ -435,13 +435,17 @@ textarea {
   border-radius: 999px;
   box-shadow: 0 3px 14px rgba(0, 0, 0, 0.42);
   color: #101418;
+  cursor: pointer;
+  font-family: inherit;
   font-size: 0.72rem;
   font-weight: 850;
-  pointer-events: none;
+  padding: 0;
 }
 
 .route-marker-start {
   background: #7dc2ae;
+  cursor: default;
+  pointer-events: none;
 }
 
 .route-marker-waypoint {

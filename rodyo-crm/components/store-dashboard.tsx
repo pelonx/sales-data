@@ -1356,13 +1356,18 @@ function StoreMap({
       label: string,
       title: string,
       coordinates: Coordinates,
-      tone: "start" | "waypoint" | "end"
+      tone: "start" | "waypoint" | "end",
+      selectStoreKey?: string
     ) {
-      const element = document.createElement("div");
+      const element = document.createElement(selectStoreKey ? "button" : "div");
       element.className = `route-marker route-marker-${tone}`;
       element.textContent = label;
       element.title = title;
       element.setAttribute("aria-label", title);
+      if (selectStoreKey && element instanceof HTMLButtonElement) {
+        element.type = "button";
+        element.addEventListener("click", () => onSelect(selectStoreKey));
+      }
 
       const marker = new maplibre.Marker({
         element,
@@ -1382,10 +1387,11 @@ function StoreMap({
         isEnd ? "E" : String(index + 1),
         `${isEnd ? "End" : `Waypoint ${index + 1}`}: ${store.storeName}`,
         storeCoordinates(store),
-        isEnd ? "end" : "waypoint"
+        isEnd ? "end" : "waypoint",
+        storeKey(store)
       );
     });
-  }, [isMapReady, routeStart, routeStores]);
+  }, [isMapReady, onSelect, routeStart, routeStores]);
 
   useEffect(() => {
     markersRef.current.forEach(({ element }, key) => {
@@ -1451,6 +1457,18 @@ function TripPlanner({
       .map((key) => mappedStoreByKey.get(key))
       .filter((store): store is StoreRollup => Boolean(store))
   ), [mappedStoreByKey, tripStoreKeys]);
+  const farthestRouteStoreKey = useMemo(() => {
+    let farthestKey = "";
+    let farthestMiles = -1;
+    tripStores.forEach((store) => {
+      const distanceFromStart = milesBetween(routeStart, storeCoordinates(store));
+      if (distanceFromStart > farthestMiles) {
+        farthestMiles = distanceFromStart;
+        farthestKey = storeKey(store);
+      }
+    });
+    return farthestKey;
+  }, [routeStart, tripStores]);
   const waypointStores = useMemo(() => (
     tripStoreKeys
       .filter((key) => key !== routeDestinationKey)
@@ -1492,7 +1510,7 @@ function TripPlanner({
   const tripMarket = orderedTripStores.reduce((total, store) => total + store.marketSalesLastMonth, 0);
   const selectedStoreKey = selectedStore ? storeKey(selectedStore) : "";
   const canAddSelectedStore = Boolean(
-    selectedStore && hasStoreCoordinates(selectedStore) && !selectedKeys.has(selectedStoreKey)
+    selectedStore && hasStoreCoordinates(selectedStore)
   );
   const isSelectedStoreInRoute = Boolean(selectedStoreKey && selectedKeys.has(selectedStoreKey));
 
@@ -1505,6 +1523,28 @@ function TripPlanner({
       return;
     }
     setRouteStart((currentStart) => ({ ...currentStart, [key]: value }));
+  }
+
+  function handleAddRouteStore(nextStoreKey: string) {
+    const nextStore = mappedStoreByKey.get(nextStoreKey);
+    if (!nextStore) {
+      return;
+    }
+
+    const currentEndStore = farthestRouteStoreKey ? mappedStoreByKey.get(farthestRouteStoreKey) : undefined;
+    const nextStoreMiles = milesBetween(routeStart, storeCoordinates(nextStore));
+    const currentEndMiles = currentEndStore ? milesBetween(routeStart, storeCoordinates(currentEndStore)) : -1;
+
+    if (!currentEndStore || nextStoreMiles > currentEndMiles) {
+      onSetDestination(nextStoreKey);
+      return;
+    }
+
+    onAddWaypoint(nextStoreKey);
+  }
+
+  function handleRemoveRouteStore(nextStoreKey: string) {
+    onRemoveStore(nextStoreKey);
   }
 
   useEffect(() => {
@@ -1535,6 +1575,12 @@ function TripPlanner({
 
     return () => controller.abort();
   }, [destinationStore, routeStart.latitude, routeStart.longitude]);
+
+  useEffect(() => {
+    if (farthestRouteStoreKey && routeDestinationKey !== farthestRouteStoreKey) {
+      onSetDestination(farthestRouteStoreKey);
+    }
+  }, [farthestRouteStoreKey, onSetDestination, routeDestinationKey]);
 
   return (
     <section className="trip-layout">
@@ -1568,7 +1614,12 @@ function TripPlanner({
             isAdded: isSelectedStoreInRoute,
             onAdd: () => {
               if (selectedStoreKey) {
-                onSetDestination(selectedStoreKey);
+                handleAddRouteStore(selectedStoreKey);
+              }
+            },
+            onRemove: () => {
+              if (selectedStoreKey) {
+                handleRemoveRouteStore(selectedStoreKey);
               }
             }
           } : undefined}
@@ -1766,7 +1817,7 @@ function TripPlanner({
                   <button
                     aria-label={`Add ${suggestion.store.storeName} as a route stop`}
                     className="icon-button"
-                    onClick={() => onAddWaypoint(storeKey(suggestion.store))}
+                    onClick={() => handleAddRouteStore(storeKey(suggestion.store))}
                     type="button"
                   >
                     <Plus size={15} />
@@ -1805,9 +1856,9 @@ function TripPlanner({
                     </span>
                   </button>
                   <button
-                    aria-label={`Set ${store.storeName} as route destination`}
+                    aria-label={`Add ${store.storeName} to route`}
                     className="icon-button"
-                    onClick={() => onSetDestination(storeKey(store))}
+                    onClick={() => handleAddRouteStore(storeKey(store))}
                     type="button"
                   >
                     <Plus size={15} />
@@ -1842,6 +1893,7 @@ function StoreDetailDrawer({
     disabled: boolean;
     isAdded: boolean;
     onAdd: () => void;
+    onRemove: () => void;
   };
 }) {
   return (
@@ -1857,11 +1909,11 @@ function StoreDetailDrawer({
           <button
             className={routeAction.isAdded ? "secondary-button" : "primary-button"}
             disabled={routeAction.disabled}
-            onClick={routeAction.onAdd}
+            onClick={routeAction.isAdded ? routeAction.onRemove : routeAction.onAdd}
             type="button"
           >
-            {routeAction.isAdded ? <Check size={15} /> : <Plus size={15} />}
-            {routeAction.isAdded ? "In route" : "Add to route"}
+            {routeAction.isAdded ? <X size={15} /> : <Plus size={15} />}
+            {routeAction.isAdded ? "Remove from route" : "Add to route"}
           </button>
         </div>
       ) : null}
