@@ -25,12 +25,14 @@ export type StoreRollup = {
   license: string;
   licenseKey: string;
   storeName: string;
+  address?: string | null;
   city?: string | null;
   state?: string | null;
   zip?: string | null;
   county?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  googlePlaceId?: string | null;
   territoryRep?: string | null;
   mapCategory: string;
   recommendation: string;

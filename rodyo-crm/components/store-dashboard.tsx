@@ -223,6 +223,24 @@ function coordinateParam(coordinates: Coordinates) {
   return `${coordinates.latitude},${coordinates.longitude}`;
 }
 
+function routeTextPart(value?: string | null) {
+  return String(value || "").trim();
+}
+
+function storeRouteQuery(store: StoreRollup) {
+  const cityState = [routeTextPart(store.city), routeTextPart(store.state)]
+    .filter(Boolean)
+    .join(", ");
+  const address = [routeTextPart(store.address), cityState, routeTextPart(store.zip)]
+    .filter(Boolean)
+    .join(", ");
+  const namedLocation = [routeTextPart(store.storeName), address]
+    .filter(Boolean)
+    .join(", ");
+
+  return namedLocation || mapsCoordinate(store);
+}
+
 function googleMapsRouteUrl(stores: StoreRollup[], startLocation: RouteStart = DEFAULT_ROUTE_START) {
   const routeStores = stores.slice(0, GOOGLE_MAPS_ROUTE_STOP_LIMIT);
   if (!routeStores.length) {
@@ -234,11 +252,17 @@ function googleMapsRouteUrl(stores: StoreRollup[], startLocation: RouteStart = D
   const params = new URLSearchParams({
     api: "1",
     origin: coordinateParam(startLocation),
-    destination: mapsCoordinate(destination),
+    destination: storeRouteQuery(destination),
     travelmode: "driving"
   });
+  if (destination.googlePlaceId) {
+    params.set("destination_place_id", destination.googlePlaceId);
+  }
   if (waypointStores.length) {
-    params.set("waypoints", waypointStores.map(mapsCoordinate).join("|"));
+    params.set("waypoints", waypointStores.map(storeRouteQuery).join("|"));
+    if (waypointStores.every((store) => store.googlePlaceId)) {
+      params.set("waypoint_place_ids", waypointStores.map((store) => String(store.googlePlaceId)).join("|"));
+    }
   }
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
