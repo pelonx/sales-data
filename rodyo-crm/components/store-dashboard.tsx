@@ -18,6 +18,7 @@ import {
   TERRITORY_BRANDS,
   TERRITORY_MAP_COLORS,
   formatUsd,
+  isStoreOverdue,
   type OrderLine,
   type SalesGoal,
   type StoreRollup
@@ -36,7 +37,7 @@ type BalaclavaSalesFilter = "all" | "1000" | "5000";
 type StoreRevenueFilter = "all" | "300" | "50000" | "100000";
 type BrandFilter = (typeof TERRITORY_BRANDS)[number];
 type ParetoFilter = "all" | "top30" | "eighty";
-type PriorityFilter = "all" | "lapsed" | "open-lane";
+type PriorityFilter = "all" | "lapsed" | "overdue" | "open-lane";
 type MapLibreModule = typeof import("maplibre-gl");
 type MapLibreMap = import("maplibre-gl").Map;
 type MapLibreMarker = import("maplibre-gl").Marker;
@@ -154,6 +155,7 @@ function summarizeStores(stores: StoreRollup[]) {
     mappedStores: stores.filter((store) => (
       Number.isFinite(store.latitude) && Number.isFinite(store.longitude)
     )).length,
+    overduePriority: stores.filter((store) => matchesPriorityFilter(store, "overdue")).length,
     lapsedPriority: stores.filter((store) => matchesPriorityFilter(store, "lapsed")).length,
     openLanePriority: stores.filter((store) => matchesPriorityFilter(store, "open-lane")).length,
     pitchMayfield: stores.filter((store) => store.mapCategory === "Pitch Mayfield").length
@@ -583,6 +585,9 @@ function priorityText(store: StoreRollup) {
 }
 
 function matchesPriorityFilter(store: StoreRollup, priority: PriorityFilter) {
+  if (priority === "overdue") {
+    return isStoreOverdue(store);
+  }
   const text = priorityText(store);
   if (priority === "lapsed") {
     return text.includes("lapsed");
@@ -779,6 +784,26 @@ function formatDate(value?: string | null) {
     day: "numeric",
     year: "numeric"
   }).format(date);
+}
+
+function formatSyncDateTime(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const time = new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+  const day = new Intl.DateTimeFormat("en-US", {
+    month: "numeric",
+    day: "numeric",
+    year: "2-digit"
+  }).format(date);
+  return `${time} ${day}`;
 }
 
 function formatMonth(value?: string | null) {
@@ -2395,11 +2420,13 @@ function TripPlanner({
 
 function OrdersView({
   orderLines,
+  cultiveraLastSyncedAt,
   stores,
   selectedStore,
   onSelectStore
 }: {
   orderLines: OrderLine[];
+  cultiveraLastSyncedAt?: string | null;
   stores: StoreRollup[];
   selectedStore?: StoreRollup;
   onSelectStore: (key: string) => void;
@@ -2410,6 +2437,7 @@ function OrdersView({
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const { syncState, syncMessage, syncOrders } = useOrderSync();
+  const syncTimestampLabel = formatSyncDateTime(cultiveraLastSyncedAt);
   const bounds = useMemo(() => orderDateBounds(orderLines), [orderLines]);
   const effectiveDateFrom = dateFrom || bounds.defaultFrom;
   const effectiveDateTo = dateTo || bounds.defaultTo;
@@ -2609,7 +2637,14 @@ function OrdersView({
     <section className="orders-view">
       <div className="panel orders-filter-panel">
         <div className="orders-action-row">
-          <span className="caption">Cultivera order source</span>
+          <div>
+            <span className="caption">Cultivera order source</span>
+            {syncTimestampLabel ? (
+              <div className="sync-timestamp">
+                Last Cultivera sync performed at {syncTimestampLabel}
+              </div>
+            ) : null}
+          </div>
           <button
             className="primary-button"
             disabled={syncState === "syncing"}
@@ -3448,6 +3483,112 @@ function StoreDetailDrawer({
   );
 }
 
+type ContactLogEntry = {
+  id: string;
+  dateContacted: string | null;
+  contactMethod: string | null;
+  initials: string | null;
+  personContacted: string | null;
+  notes: string | null;
+  savedAt: string | null;
+};
+
+function ContactLogHistory({ store }: { store: StoreRollup }) {
+  const [logs, setLogs] = useState<ContactLogEntry[]>([]);
+  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [error, setError] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!store.storeId && !store.licenseKey) {
+      setLogs([]);
+      setStatus("idle");
+      return;
+    }
+
+    const controller = new AbortController();
+    setStatus("loading");
+    setError("");
+    setExpandedId(null);
+
+    async function loadLogs() {
+      try {
+        const params = new URLSearchParams();
+        if (store.storeId) {
+          params.set("storeId", store.storeId);
+        }
+        if (store.licenseKey) {
+          params.set("licenseKey", store.licenseKey);
+        }
+        const response = await fetch(`/api/contact-logs?${params.toString()}`, {
+          signal: controller.signal
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || "Could not load contact history.");
+        }
+        setLogs(Array.isArray(result.logs) ? result.logs : []);
+        setStatus("idle");
+      } catch (loadError) {
+        if (loadError instanceof DOMException && loadError.name === "AbortError") {
+          return;
+        }
+        setError(loadError instanceof Error ? loadError.message : "Could not load contact history.");
+        setStatus("error");
+      }
+    }
+
+    loadLogs();
+    return () => controller.abort();
+  }, [store.storeId, store.licenseKey, store.contactLogCount]);
+
+  if (status === "loading") {
+    return <p className="detail-note">Loading contact history…</p>;
+  }
+
+  if (status === "error") {
+    return <p className="detail-note">{error}</p>;
+  }
+
+  if (!logs.length) {
+    return <p className="detail-note">No contact logs recorded yet.</p>;
+  }
+
+  return (
+    <div className="contact-log-history">
+      <div className="contact-log-history-title">Contact history · {logs.length.toLocaleString()}</div>
+      <ul className="contact-log-list">
+        {logs.map((log) => {
+          const isOpen = expandedId === log.id;
+          const person = log.personContacted || log.initials || "";
+          return (
+            <li className="contact-log-item" key={log.id}>
+              <button
+                type="button"
+                className="contact-log-summary"
+                aria-expanded={isOpen}
+                onClick={() => setExpandedId(isOpen ? null : log.id)}
+              >
+                <span className="contact-log-date">{formatDate(log.dateContacted || log.savedAt)}</span>
+                <span className="contact-log-method">{log.contactMethod || "—"}</span>
+                {person ? <span className="contact-log-person">{person}</span> : null}
+                <span aria-hidden="true" className="contact-log-caret">{isOpen ? "▾" : "▸"}</span>
+              </button>
+              {isOpen ? (
+                <div className="contact-log-detail">
+                  {log.initials ? <DetailRow label="Rep" value={log.initials} /> : null}
+                  {log.personContacted ? <DetailRow label="Person" value={log.personContacted} /> : null}
+                  <p className="detail-note">{log.notes || "No notes recorded."}</p>
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function StoreDetailContent({
   activeTab,
   store,
@@ -3530,7 +3671,7 @@ function StoreDetailContent({
           <DetailRow label="Method" value={store.lastContactMethod} />
           <DetailRow label="Person" value={store.lastContactPerson} />
         </div>
-        {store.lastContactNotes ? <p className="detail-note">{store.lastContactNotes}</p> : null}
+        <ContactLogHistory store={store} />
       </div>
     );
   }
@@ -3559,6 +3700,7 @@ export function StoreDashboard({ snapshot, initialView }: StoreDashboardProps) {
   const [stores, setStores] = useState(snapshot.stores);
   const orderLines = snapshot.orderLines || [];
   const salesGoals = snapshot.salesGoals || [];
+  const cultiveraLastSyncedAt = snapshot.cultiveraLastSyncedAt || null;
   const [storeQuery, setStoreQuery] = useState("");
   const [draftFilters, setDraftFilters] = useState<StoreFilters>(defaultStoreFilters);
   const [appliedFilters, setAppliedFilters] = useState<StoreFilters>(defaultStoreFilters);
@@ -3920,6 +4062,7 @@ export function StoreDashboard({ snapshot, initialView }: StoreDashboardProps) {
                   onChange={(event) => updateDraftFilter("priority", event.target.value as PriorityFilter)}
                 >
                   <option value="all">All priorities</option>
+                  <option value="overdue">Overdue</option>
                   <option value="lapsed">Lapsed</option>
                   <option value="open-lane">Open lane</option>
                 </select>
@@ -3954,6 +4097,10 @@ export function StoreDashboard({ snapshot, initialView }: StoreDashboardProps) {
             <div className="metric">
               <div className="metric-label">Mapped</div>
               <div className="metric-value">{metrics.mappedStores.toLocaleString()}</div>
+            </div>
+            <div className="metric">
+              <div className="metric-label">Overdue</div>
+              <div className="metric-value">{metrics.overduePriority.toLocaleString()}</div>
             </div>
             <div className="metric">
               <div className="metric-label">Lapsed Priority</div>
@@ -4074,6 +4221,7 @@ export function StoreDashboard({ snapshot, initialView }: StoreDashboardProps) {
         ) : activeView === "orders" ? (
           <OrdersView
             orderLines={orderLines}
+            cultiveraLastSyncedAt={cultiveraLastSyncedAt}
             stores={stores}
             selectedStore={selectedStore}
             onSelectStore={handleStoreSelect}

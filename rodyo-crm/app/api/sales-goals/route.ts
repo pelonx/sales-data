@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import { createClient } from "@supabase/supabase-js";
+import { DASHBOARD_DATA_TAG } from "@/lib/dashboard-data";
 
 type SalesGoalPayloadRow = {
   goalType?: string;
@@ -100,6 +102,8 @@ export async function POST(request: Request) {
         throw new Error(insertError.message);
       }
     }
+
+    revalidateTag(DASHBOARD_DATA_TAG, "max");
 
     return NextResponse.json({
       month: goalMonth,

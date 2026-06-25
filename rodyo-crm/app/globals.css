@@ -460,6 +460,87 @@ textarea {
   color: white;
 }
 
+/* MapLibre renders popups and markers as siblings in the same container; the
+   marker buttons set z-index, so the popup wrapper needs a higher z-index to
+   float above the pins instead of behind them. */
+.maplibregl-popup {
+  z-index: 5;
+}
+
+.contact-log-history {
+  display: grid;
+  gap: 8px;
+}
+
+.contact-log-history-title {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.contact-log-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.contact-log-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.contact-log-summary {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.contact-log-summary:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.contact-log-date {
+  font-weight: 650;
+}
+
+.contact-log-method {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.contact-log-person {
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contact-log-caret {
+  color: var(--muted);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.contact-log-detail {
+  display: grid;
+  gap: 6px;
+  padding: 0 10px 10px;
+}
+
 .map-popup {
   display: grid;
   gap: 3px;
@@ -1020,6 +1101,13 @@ textarea {
 .sync-message-error {
   border-color: rgba(255, 91, 143, 0.45);
   color: var(--pink);
+}
+
+.sync-timestamp {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
 }
 
 .orders-filter-grid {

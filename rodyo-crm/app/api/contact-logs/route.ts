@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import { createClient } from "@supabase/supabase-js";
+import { DASHBOARD_DATA_TAG } from "@/lib/dashboard-data";
 
 type ContactLogPayload = {
   storeId?: string;
@@ -53,6 +55,54 @@ function createSupabaseAdminClient() {
   });
 }
 
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const storeId = cleanOptionalText(searchParams.get("storeId"));
+  const licenseKey = cleanOptionalText(searchParams.get("licenseKey"));
+
+  if (!storeId && !licenseKey) {
+    return NextResponse.json({ error: "Provide storeId or licenseKey." }, { status: 400 });
+  }
+
+  try {
+    const supabase = createSupabaseAdminClient();
+    const orFilters = [
+      storeId ? `store_id.eq.${storeId}` : "",
+      licenseKey ? `license_key.eq.${licenseKey}` : ""
+    ].filter(Boolean);
+
+    const { data, error } = await supabase
+      .from("contact_logs")
+      .select("id, store_id, license_key, date_contacted, contact_method, initials, person_contacted, notes, saved_at")
+      .or(orFilters.join(","))
+      .order("date_contacted", { ascending: false, nullsFirst: false })
+      .order("saved_at", { ascending: false })
+      .limit(200);
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    const logs = (data || []).map((row) => ({
+      id: row.id,
+      storeId: row.store_id,
+      dateContacted: row.date_contacted,
+      contactMethod: row.contact_method,
+      initials: row.initials,
+      personContacted: row.person_contacted,
+      notes: row.notes,
+      savedAt: row.saved_at
+    }));
+
+    return NextResponse.json({ logs });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Could not load contact logs." },
+      { status: 500 }
+    );
+  }
+}
+
 export async function POST(request: Request) {
   let payload: ContactLogPayload;
 
@@ -98,6 +148,8 @@ export async function POST(request: Request) {
         { status: 500 }
       );
     }
+
+    revalidateTag(DASHBOARD_DATA_TAG, "max");
 
     return NextResponse.json({
       id: data.id,

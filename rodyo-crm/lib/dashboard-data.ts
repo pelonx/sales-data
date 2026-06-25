@@ -1,6 +1,12 @@
+import { unstable_cache } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
 import { TERRITORY_BRANDS, priorityFromScore, type OrderLine, type SalesGoal, type StoreRollup } from "@/lib/rules";
+
+// Cache tag for the dashboard snapshot. Write routes (order sync, contact logs,
+// buyer contacts, sales goals) call revalidateTag with this so a successful
+// write immediately busts the cached data instead of waiting for the TTL.
+export const DASHBOARD_DATA_TAG = "dashboard-data";
 
 type TerritoryBrand = (typeof TERRITORY_BRANDS)[number];
 
@@ -17,6 +23,7 @@ export type DashboardSnapshot = {
   stores: StoreRollup[];
   orderLines: OrderLine[];
   salesGoals: SalesGoal[];
+  cultiveraLastSyncedAt?: string | null;
   metrics: {
     totalRetailers: number;
     mappedStores: number;
@@ -307,6 +314,7 @@ function demoSnapshot(): DashboardSnapshot {
     stores,
     orderLines: demoOrderLines,
     salesGoals: [],
+    cultiveraLastSyncedAt: demoOrderLines[0]?.importedAt ?? null,
     metrics: summarize(stores)
   };
 }
@@ -407,7 +415,7 @@ async function createDashboardDataClient() {
   return createSupabaseServerClient();
 }
 
-export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
+async function buildDashboardSnapshot(): Promise<DashboardSnapshot> {
   if (
     !process.env.NEXT_PUBLIC_SUPABASE_URL ||
     (!process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY && !process.env.SUPABASE_SECRET_KEY && !process.env.SUPABASE_SERVICE_ROLE_KEY)
@@ -506,10 +514,17 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
 
   const { data: orderData, error: orderDataError } = await supabase
     .from("orders")
-    .select("id, order_number, store_id, client_name, license, license_key, submitted_at, status, order_items(id, brand, product_name, sub_product_line, units, line_total)")
+    .select("id, order_number, store_id, client_name, license, license_key, submitted_at, status, imported_at, order_items(id, brand, product_name, sub_product_line, units, line_total)")
     .not("submitted_at", "is", null)
     .order("submitted_at", { ascending: false });
   const orderRows = orderDataError ? [] : (orderData || []);
+  const cultiveraLastSyncedAt = orderRows.reduce((latestSyncedAt: string | null, row) => {
+    const importedAt = row.imported_at ? String(row.imported_at) : null;
+    if (!importedAt) {
+      return latestSyncedAt;
+    }
+    return !latestSyncedAt || importedAt > latestSyncedAt ? importedAt : latestSyncedAt;
+  }, null);
 
   (orderRows || []).forEach((row) => {
     const key = keyFromStore(row);
@@ -571,7 +586,8 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
         productName: item?.product_name ?? null,
         subProductLine: item?.sub_product_line ?? null,
         units: Number(item?.units ?? 0),
-        lineTotal: Number(item?.line_total ?? 0)
+        lineTotal: Number(item?.line_total ?? 0),
+        importedAt: row.imported_at
       });
     });
   });
@@ -664,6 +680,29 @@ export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
     stores: normalizedStores,
     orderLines,
     salesGoals,
+    cultiveraLastSyncedAt,
     metrics: summarize(normalizedStores)
   };
+}
+
+// The dashboard data only changes when a sync or save runs, so cache the
+// snapshot and let repeat navigation/refresh hit the cache instead of
+// re-querying and re-aggregating thousands of order rows on every request.
+// The cache is busted on writes via revalidateTag(DASHBOARD_DATA_TAG); the
+// 5-minute revalidate window is a safety net for any out-of-band changes.
+const loadCachedDashboardSnapshot = unstable_cache(
+  buildDashboardSnapshot,
+  ["dashboard-snapshot"],
+  { revalidate: 300, tags: [DASHBOARD_DATA_TAG] }
+);
+
+export async function loadDashboardSnapshot(): Promise<DashboardSnapshot> {
+  // Only the service-role path is safe to wrap in unstable_cache: the
+  // publishable-key fallback reads request cookies, which cannot be called
+  // inside a cached function. In that case load directly (uncached).
+  const canCache = Boolean(
+    process.env.NEXT_PUBLIC_SUPABASE_URL &&
+    (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY)
+  );
+  return canCache ? loadCachedDashboardSnapshot() : buildDashboardSnapshot();
 }

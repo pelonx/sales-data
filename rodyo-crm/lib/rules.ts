@@ -89,6 +89,7 @@ export type OrderLine = {
   subProductLine?: string | null;
   units: number;
   lineTotal: number;
+  importedAt?: string | null;
 };
 
 export type SalesGoal = {
@@ -107,6 +108,35 @@ export function priorityFromScore(score: number): PriorityLevel {
   if (score >= 0.75) return "High";
   if (score >= 0.4) return "Medium";
   return "Low";
+}
+
+// Days past a store's last K. Savage order before we treat it as having missed
+// its expected reorder. Flat threshold (no per-store cadence data yet); tuned to
+// catch a roughly-monthly buyer as soon as it misses its cycle, and naturally a
+// superset of the 120-day Lapsed classification. Adjust here to change the filter.
+export const OVERDUE_REORDER_DAYS = 30;
+
+export function daysSinceDate(value?: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return Math.floor((Date.now() - date.getTime()) / 86_400_000);
+}
+
+// A store is "Overdue" if it has ordered K. Savage before but has not reordered
+// within OVERDUE_REORDER_DAYS. Stores that never carried K. Savage are open-lane
+// prospects, not overdue. A K. Savage history with no datable last order means it
+// has been overdue long enough to lose the timestamp, so it counts as overdue.
+export function isStoreOverdue(store: StoreRollup): boolean {
+  if (store.kSavageHistoricalRevenue <= 0) {
+    return false;
+  }
+  const days = daysSinceDate(store.kSavageLastOrderAt);
+  return days === null ? true : days > OVERDUE_REORDER_DAYS;
 }
 
 export function contactCheckmarks(store: StoreRollup) {

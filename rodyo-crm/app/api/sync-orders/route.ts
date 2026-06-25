@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import { createClient } from "@supabase/supabase-js";
+import { DASHBOARD_DATA_TAG } from "@/lib/dashboard-data";
 
 const DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1kY5e6SXd7eQ7GJx-jg6M1R60WCCZ9I_25Eb7ZmuDKHw/edit?usp=sharing";
 const DEFAULT_ORDER_SHEET_NAME = "Cultivera Data";
@@ -218,7 +220,11 @@ function orderKey(orderNumber: string, licenseKey: string) {
   return `${orderNumber}::${licenseKey}`;
 }
 
-export async function POST() {
+// Allow the sync enough time to paginate and upsert thousands of rows when run
+// on a serverless host (Vercel caps non-configured functions well below this).
+export const maxDuration = 60;
+
+async function runOrderSync() {
   try {
     const rows = await fetchOrderSheet();
     const sample = rows[0] || {};
@@ -259,6 +265,7 @@ export async function POST() {
 
     const orderRowsByKey = new Map<string, Record<string, unknown>>();
     let skippedRows = 0;
+    const syncedAt = new Date().toISOString();
 
     rows.forEach((row) => {
       const orderNumber = cleanReference(row[orderNumberCol]);
@@ -282,6 +289,7 @@ export async function POST() {
         submitted_at: submittedCol ? parseTimestamp(row[submittedCol]) : null,
         status: statusCol ? cleanCell(row[statusCol]) : "",
         source_name: "cultivera",
+        imported_at: syncedAt,
         raw_payload: rowPayload(row)
       });
     });
@@ -354,13 +362,57 @@ export async function POST() {
       }
     });
 
-    return NextResponse.json({
+    return {
       orderRows: orderRows.length,
       itemRows: itemRows.length,
       skippedRows,
       brandTotals,
-      syncedAt: new Date().toISOString()
-    });
+      syncedAt
+    };
+  } catch (error) {
+    throw error instanceof Error ? error : new Error("Could not sync orders.");
+  }
+}
+
+async function handleSync() {
+  const result = await runOrderSync();
+  // Bust the cached dashboard snapshot so freshly synced orders show immediately.
+  revalidateTag(DASHBOARD_DATA_TAG, "max");
+  return NextResponse.json(result);
+}
+
+export async function POST() {
+  try {
+    return await handleSync();
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Could not sync orders." },
+      { status: 500 }
+    );
+  }
+}
+
+// Scheduled entry point (Vercel Cron / external scheduler). Vercel Cron sends
+// `Authorization: Bearer <CRON_SECRET>` automatically when CRON_SECRET is set;
+// a `?secret=` query param is also accepted for other schedulers. Without a
+// configured secret the GET trigger stays disabled so it can't be hit openly.
+export async function GET(request: Request) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) {
+    return NextResponse.json(
+      { error: "Scheduled sync is not configured. Set CRON_SECRET to enable it." },
+      { status: 401 }
+    );
+  }
+
+  const headerToken = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  const queryToken = new URL(request.url).searchParams.get("secret") || "";
+  if (headerToken !== secret && queryToken !== secret) {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  }
+
+  try {
+    return await handleSync();
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not sync orders." },

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import { createClient } from "@supabase/supabase-js";
+import { DASHBOARD_DATA_TAG } from "@/lib/dashboard-data";
 
 type StoreContactPayload = {
   storeId?: string;
@@ -65,6 +67,8 @@ export async function POST(request: Request) {
         { status: 500 }
       );
     }
+
+    revalidateTag(DASHBOARD_DATA_TAG, "max");
 
     return NextResponse.json({
       storeId: data.store_id,
