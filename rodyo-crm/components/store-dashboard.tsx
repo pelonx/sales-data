@@ -8,6 +8,7 @@ import {
   ExternalLink,
   ListPlus,
   Map as MapIcon,
+  Pencil,
   Plus,
   SlidersHorizontal,
   Trash2,
@@ -32,7 +33,7 @@ type StoreDashboardProps = {
 
 type ViewMode = "stores" | "map" | "orders" | "goals" | "sync";
 type DetailTab = "contact" | "orders" | "buyer" | "history" | "samples";
-type SortKey = "store" | "brand" | "priority" | "balaclava" | "storeRevenue" | "rep" | "log";
+type SortKey = "store" | "brand" | "priority" | "balaclava" | "storeRevenue" | "lastOrder" | "rep" | "log";
 type SortDirection = "asc" | "desc";
 type BalaclavaSalesFilter = "all" | "1000" | "5000";
 type StoreRevenueFilter = "all" | "300" | "50000" | "100000";
@@ -92,11 +93,12 @@ const detailTabs: { id: DetailTab; label: string }[] = [
 ];
 
 const sortableColumns: { key: SortKey; label: string; width?: string }[] = [
-  { key: "store", label: "Store", width: "32%" },
+  { key: "store", label: "Store", width: "22%" },
   { key: "brand", label: "Brand" },
   { key: "priority", label: "Priority", width: "8%" },
   { key: "balaclava", label: "Balaclava" },
   { key: "storeRevenue", label: "Store Revenue" },
+  { key: "lastOrder", label: "Last Order" },
   { key: "rep", label: "Rep" },
   { key: "log", label: "Log" }
 ];
@@ -546,6 +548,9 @@ function sortValueForStore(store: StoreRollup, sortKey: SortKey) {
   }
   if (sortKey === "storeRevenue") {
     return store.marketSalesLastMonth;
+  }
+  if (sortKey === "lastOrder") {
+    return orderTimestamp(store.lastOrderAt);
   }
   if (sortKey === "rep") {
     return textSortValue(store.territoryRep);
@@ -1987,7 +1992,8 @@ function TripPlanner({
   onSetDestination,
   onSelectStore,
   onBuyerSaved,
-  onContactLogSaved
+  onContactLogSaved,
+  onStoreNameSaved
 }: {
   stores: StoreRollup[];
   orderLines: OrderLine[];
@@ -2004,6 +2010,7 @@ function TripPlanner({
   onSelectStore: (key: string) => void;
   onBuyerSaved: (storeId: string, buyer: BuyerContactPatch) => void;
   onContactLogSaved: (storeId: string, contactLog: ContactLogPatch) => void;
+  onStoreNameSaved: (storeId: string, storeName: string) => void;
 }) {
   const [routeStart, setRouteStart] = useState<RouteStart>(DEFAULT_ROUTE_START);
   const [maxOffRouteMiles, setMaxOffRouteMiles] = useState(5);
@@ -2182,6 +2189,7 @@ function TripPlanner({
           setActiveTab={setActiveTab}
           onBuyerSaved={onBuyerSaved}
           onContactLogSaved={onContactLogSaved}
+          onStoreNameSaved={onStoreNameSaved}
           orderLines={selectedStoreOrderLines}
           routeAction={selectedStore ? {
             disabled: !canAddSelectedStore,
@@ -3439,12 +3447,126 @@ function GoalsView({
   );
 }
 
+function StoreNameEditor({
+  store,
+  onSaved
+}: {
+  store: StoreRollup;
+  onSaved: (storeId: string, storeName: string) => void;
+}) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [value, setValue] = useState(store.storeName);
+  const [isSaving, setIsSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setValue(store.storeName);
+    setIsEditing(false);
+    setMessage("");
+  }, [store.storeId, store.storeName]);
+
+  function cancelEdit() {
+    setIsEditing(false);
+    setValue(store.storeName);
+    setMessage("");
+  }
+
+  async function handleSave() {
+    const nextName = value.trim();
+    if (!store.storeId) {
+      setMessage("This store is missing a Supabase store id.");
+      return;
+    }
+    if (!nextName) {
+      setMessage("Store name can’t be empty.");
+      return;
+    }
+    if (nextName === store.storeName) {
+      setIsEditing(false);
+      return;
+    }
+
+    setIsSaving(true);
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/store-name", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storeId: store.storeId, storeName: nextName })
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Could not save store name.");
+      }
+
+      onSaved(result.storeId, result.storeName);
+      setIsEditing(false);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not save store name.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  if (!isEditing) {
+    return (
+      <div className="detail-title">
+        <h3>
+          <span>{store.storeName}</span>
+          <button
+            aria-label="Edit store name"
+            className="icon-button"
+            onClick={() => setIsEditing(true)}
+            title="Edit store name"
+            type="button"
+          >
+            <Pencil size={14} />
+          </button>
+        </h3>
+        <span className="caption">License {store.license}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="detail-title">
+      <div className="store-name-edit">
+        <input
+          autoFocus
+          aria-label="Store name"
+          disabled={isSaving}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              handleSave();
+            } else if (event.key === "Escape") {
+              cancelEdit();
+            }
+          }}
+          value={value}
+        />
+        <button className="primary-button" disabled={isSaving} onClick={handleSave} type="button">
+          {isSaving ? "Saving…" : "Save"}
+        </button>
+        <button className="secondary-button" disabled={isSaving} onClick={cancelEdit} type="button">
+          Cancel
+        </button>
+      </div>
+      {message ? <span className="status-message">{message}</span> : null}
+    </div>
+  );
+}
+
 function StoreDetailDrawer({
   selectedStore,
   activeTab,
   setActiveTab,
   onBuyerSaved,
   onContactLogSaved,
+  onStoreNameSaved,
   orderLines = [],
   routeAction
 }: {
@@ -3453,6 +3575,7 @@ function StoreDetailDrawer({
   setActiveTab: (tab: DetailTab) => void;
   onBuyerSaved: (storeId: string, buyer: BuyerContactPatch) => void;
   onContactLogSaved: (storeId: string, contactLog: ContactLogPatch) => void;
+  onStoreNameSaved: (storeId: string, storeName: string) => void;
   orderLines?: OrderLine[];
   routeAction?: {
     disabled: boolean;
@@ -3463,12 +3586,16 @@ function StoreDetailDrawer({
 }) {
   return (
     <aside className="panel store-detail">
-      <div className="detail-title">
-        <h3>
-          <span>{selectedStore?.storeName ?? "Select a store"}</span>
-        </h3>
-        {!selectedStore ? <span className="caption">Store detail drawer</span> : null}
-      </div>
+      {selectedStore ? (
+        <StoreNameEditor store={selectedStore} onSaved={onStoreNameSaved} />
+      ) : (
+        <div className="detail-title">
+          <h3>
+            <span>Select a store</span>
+          </h3>
+          <span className="caption">Store detail drawer</span>
+        </div>
+      )}
       {selectedStore && routeAction ? (
         <div className="detail-actions">
           <button
@@ -3862,6 +3989,12 @@ export function StoreDashboard({ snapshot, initialView }: StoreDashboardProps) {
     )));
   }
 
+  function handleStoreNameSaved(storeId: string, storeName: string) {
+    setStores((currentStores) => currentStores.map((store) => (
+      store.storeId === storeId ? { ...store, storeName } : store
+    )));
+  }
+
   function handleContactLogSaved(storeId: string, contactLog: ContactLogPatch) {
     setStores((currentStores) => currentStores.map((store) => (
       store.storeId === storeId
@@ -3960,7 +4093,7 @@ export function StoreDashboard({ snapshot, initialView }: StoreDashboardProps) {
 
     setSortKey(nextSortKey);
     setSortDirection(
-      nextSortKey === "balaclava" || nextSortKey === "storeRevenue" || nextSortKey === "priority" || nextSortKey === "log" ? "desc" : "asc"
+      nextSortKey === "balaclava" || nextSortKey === "storeRevenue" || nextSortKey === "lastOrder" || nextSortKey === "priority" || nextSortKey === "log" ? "desc" : "asc"
     );
   }
 
@@ -4214,13 +4347,14 @@ export function StoreDashboard({ snapshot, initialView }: StoreDashboardProps) {
                       </td>
                       <td>{formatUsd(store.latestMonthRevenue)}</td>
                       <td>{formatUsd(store.marketSalesLastMonth)}</td>
+                      <td>{formatDate(store.lastOrderAt)}</td>
                       <td>{store.territoryRep || "-"}</td>
                       <td>{store.hasContactEver ? "✅" : ""}</td>
                     </tr>
                   ))}
                   {!sortedStores.length ? (
                     <tr>
-                      <td colSpan={7}>No stores match that search.</td>
+                      <td colSpan={8}>No stores match that search.</td>
                     </tr>
                   ) : null}
                 </tbody>
@@ -4233,6 +4367,7 @@ export function StoreDashboard({ snapshot, initialView }: StoreDashboardProps) {
               setActiveTab={setActiveTab}
               onBuyerSaved={handleBuyerSaved}
               onContactLogSaved={handleContactLogSaved}
+              onStoreNameSaved={handleStoreNameSaved}
               orderLines={selectedStoreOrderLines}
             />
           </section>
@@ -4253,6 +4388,7 @@ export function StoreDashboard({ snapshot, initialView }: StoreDashboardProps) {
             onSelectStore={handleStoreSelect}
             onBuyerSaved={handleBuyerSaved}
             onContactLogSaved={handleContactLogSaved}
+            onStoreNameSaved={handleStoreNameSaved}
           />
         ) : activeView === "orders" ? (
           <OrdersView

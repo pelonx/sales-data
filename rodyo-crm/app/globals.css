@@ -817,6 +817,42 @@ textarea {
   font-weight: 740;
 }
 
+.detail-title h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.store-name-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.store-name-edit input {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
 .store-subtext {
   color: var(--muted);
   font-size: 0.78rem;
@@ -865,7 +901,7 @@ textarea {
 .brand-dots {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   min-height: 20px;
 }
 
