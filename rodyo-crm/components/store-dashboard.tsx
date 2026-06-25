@@ -99,8 +99,8 @@ const sortableColumns: { key: SortKey; label: string; width?: string }[] = [
   { key: "balaclava", label: "Balaclava" },
   { key: "storeRevenue", label: "Store Revenue" },
   { key: "lastOrder", label: "Last Order" },
-  { key: "rep", label: "Rep" },
-  { key: "log", label: "Log" }
+  { key: "rep", label: "Rep", width: "7%" },
+  { key: "log", label: "Log", width: "7%" }
 ];
 
 const BRAND_DOT_COLORS: Record<BrandFilter, string> = {
@@ -811,6 +811,21 @@ function formatDate(value?: string | null) {
     month: "short",
     day: "numeric",
     year: "numeric"
+  }).format(date);
+}
+
+function formatShortDate(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "2-digit"
   }).format(date);
 }
 
@@ -4347,7 +4362,7 @@ export function StoreDashboard({ snapshot, initialView }: StoreDashboardProps) {
                       </td>
                       <td>{formatUsd(store.latestMonthRevenue)}</td>
                       <td>{formatUsd(store.marketSalesLastMonth)}</td>
-                      <td>{formatDate(store.lastOrderAt)}</td>
+                      <td>{formatShortDate(store.lastOrderAt)}</td>
                       <td>{store.territoryRep || "-"}</td>
                       <td>{store.hasContactEver ? "✅" : ""}</td>
                     </tr>
